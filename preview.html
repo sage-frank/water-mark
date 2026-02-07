@@ -1,0 +1,154 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>PDF 水印预览 (PDF.js)</title>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js"></script>
+    <style>
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+            margin: 20px;
+            background-color: #f5f5f5;
+        }
+        .controls {
+            background: white;
+            padding: 20px;
+            border-radius: 8px;
+            box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+            margin-bottom: 20px;
+            text-align: center;
+        }
+        #file-input {
+            margin: 10px 0;
+            padding: 10px;
+            border: 2px dashed #ccc;
+            border-radius: 4px;
+            width: 100%;
+            max-width: 400px;
+            box-sizing: border-box;
+        }
+        #pdf-container {
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            gap: 20px;
+        }
+        .page-wrapper {
+            position: relative;
+            box-shadow: 0 4px 6px rgba(0,0,0,0.1);
+        }
+        canvas {
+            display: block;
+            background: white;
+        }
+        .loading {
+            color: #666;
+            font-style: italic;
+        }
+        .error {
+            color: #d32f2f;
+            background: #ffebee;
+            padding: 10px;
+            border-radius: 4px;
+            display: none;
+        }
+    </style>
+</head>
+<body>
+    <div class="controls">
+        <h1>PDF 水印预览工具</h1>
+        <p>请选择生成的 PDF 文件检查水印是否显示</p>
+        <input type="file" id="file-input" accept="application/pdf">
+        <div id="error-msg" class="error"></div>
+    </div>
+
+    <div id="pdf-container"></div>
+
+    <script>
+        // 设置 PDF.js worker
+        pdfjsLib.GlobalWorkerOptions.workerSrc = 'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js';
+
+        const fileInput = document.getElementById('file-input');
+        const container = document.getElementById('pdf-container');
+        const errorMsg = document.getElementById('error-msg');
+
+        fileInput.addEventListener('change', async function(e) {
+            const file = e.target.files[0];
+            if (!file) return;
+
+            // 清理旧内容
+            container.innerHTML = '<div class="loading">正在加载 PDF...</div>';
+            errorMsg.style.display = 'none';
+            errorMsg.textContent = '';
+
+            try {
+                // 读取文件
+                const arrayBuffer = await file.arrayBuffer();
+                
+                // 加载 PDF
+                const loadingTask = pdfjsLib.getDocument(arrayBuffer);
+                const pdf = await loadingTask.promise;
+                
+                container.innerHTML = ''; // 清除 loading
+
+                // 渲染每一页
+                for (let pageNum = 1; pageNum <= pdf.numPages; pageNum++) {
+                    await renderPage(pdf, pageNum);
+                }
+            } catch (error) {
+                console.error('Error loading PDF:', error);
+                container.innerHTML = '';
+                errorMsg.textContent = '加载 PDF 失败: ' + error.message;
+                errorMsg.style.display = 'block';
+            }
+        });
+
+        async function renderPage(pdf, pageNum) {
+            try {
+                const page = await pdf.getPage(pageNum);
+                const scale = 1.5; // 缩放比例，1.5倍清晰度
+                const viewport = page.getViewport({ scale });
+
+                // 创建页面容器
+                const wrapper = document.createElement('div');
+                wrapper.className = 'page-wrapper';
+                
+                // 创建 canvas
+                const canvas = document.createElement('canvas');
+                const context = canvas.getContext('2d');
+                canvas.height = viewport.height;
+                canvas.width = viewport.width;
+                canvas.style.width = (viewport.width / scale) + 'px'; // 响应式显示
+                canvas.style.maxWidth = '100%';
+                canvas.style.height = 'auto';
+
+                wrapper.appendChild(canvas);
+                container.appendChild(wrapper);
+
+                // 渲染任务
+                const renderContext = {
+                    canvasContext: context,
+                    viewport: viewport
+                };
+                
+                await page.render(renderContext).promise;
+                
+                // 添加页码标签
+                const label = document.createElement('div');
+                label.textContent = `Page ${pageNum}`;
+                label.style.textAlign = 'center';
+                label.style.color = '#666';
+                label.style.marginTop = '5px';
+                wrapper.appendChild(label);
+
+            } catch (error) {
+                console.error(`Error rendering page ${pageNum}:`, error);
+                const errDiv = document.createElement('div');
+                errDiv.textContent = `Page ${pageNum} render error: ${error.message}`;
+                container.appendChild(errDiv);
+            }
+        }
+    </script>
+</body>
+</html>
