@@ -6,3 +6,12 @@ edition = "2024"
 [dependencies]
 lopdf = "0.33.0"
 ab_glyph = "0.2"
+
+
+[lib]
+name = "water_mark"
+crate-type = ["cdylib", "rlib"] # cdylib 用于 PHP (FFI), rlib 用于 main.rs 调用
+
+[[bin]]
+name = "water_mark_cli"
+path = "src/main.rs"
