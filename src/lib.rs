@@ -15,7 +15,7 @@ pub unsafe extern "C" fn add_pdf_watermark(
     user_name: *const c_char,
     date_str: *const c_char,
 ) -> i32 {
-   let (input, font_p, name, date) = unsafe {
+   let (input, output,font_p, name, date) = unsafe {
         (
             CStr::from_ptr(input_path).to_string_lossy(),
             CStr::from_ptr(output_path).to_string_lossy(),
@@ -27,7 +27,7 @@ pub unsafe extern "C" fn add_pdf_watermark(
 
     let text = format!("致{}-{}:高度保密", name, date);
 
-    match run_watermark_process(&input, &output_path, &font_p, &text) {
+    match run_watermark_process(&input, &output, &font_p, &text) {
         Ok(_) => 0,
         Err(_) => -1,
     }
@@ -35,7 +35,7 @@ pub unsafe extern "C" fn add_pdf_watermark(
 
 // --- 公共处理函数：供 main.rs 和 FFI 调用 ---
 
-pub fn run_watermark_process(input_path: &str,output_path: &str, font_path: &str, text: &str) -> Result<String, Box<dyn std::error::Error>> {
+pub fn run_watermark_process(input_path: &str, output_path: &str, font_path: &str, text: &str) -> Result<String, Box<dyn std::error::Error>> {
     let mut doc = Document::load(input_path)?;
     let font_data = std::fs::read(font_path)?;
     let font = FontRef::try_from_slice(&font_data)?;
@@ -87,7 +87,7 @@ pub fn run_watermark_process(input_path: &str,output_path: &str, font_path: &str
     }
 
     doc.save(&output_path)?;
-    Ok(output_path)
+    Ok(output_path.to_string())
 }
 
 // --- 内部算法逻辑 (私有) ---
