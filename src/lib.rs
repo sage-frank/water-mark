@@ -155,7 +155,7 @@ pub extern "C" fn add_pdf_watermark(
 /// 2. 读取并解析字体（只做一次）
 /// 3. 预计算文本矢量路径（只做一次）
 /// 4. 将文本作为XObject流对象嵌入PDF
-/// 5. 遍历所有页面，生成水印网格
+/// 5. 遍历所有页面，生成水印网格（考虑页面旋转）
 /// 6. 保存处理后的PDF
 ///
 /// # 参数
@@ -218,6 +218,9 @@ pub fn run_watermark_process(
     for (page_num, object_id) in doc.get_pages() {
         let (w, h) = page_size(&doc, object_id).unwrap_or((595.0, 842.0));
 
+        // 获取页面旋转角度（支持旋转PDF）
+        let page_rotation = get_page_rotation(&doc, object_id);
+
         // 添加XObject资源到页面
         if let Err(e) = add_xobject_to_page(&mut doc, object_id, xobject_name, xobject_id) {
             eprintln!(
@@ -227,7 +230,7 @@ pub fn run_watermark_process(
             continue;
         }
 
-        // 生成水印网格操作
+        // 生成水印网格操作（传入页面旋转角度）
         let ops = match build_watermark_grid_ops_xobject_optimized(
             xobject_name,
             DEFAULT_FONT_SIZE,
@@ -235,6 +238,7 @@ pub fn run_watermark_process(
             w,
             h,
             text_w,
+            page_rotation,
         ) {
             Ok(v) => v,
             Err(e) => {
@@ -447,6 +451,7 @@ fn obj_to_f32(o: &Object) -> f32 {
 /// - 搜索页面及其父页面的 Rotate 属性
 /// - 限制搜索深度为10级以防止无限循环
 /// - 返回值为 0, 90, 180, 270（PDF标准值）
+/// - 现在被 run_watermark_process 调用以支持旋转 PDF
 fn get_page_rotation(doc: &Document, page_id: ObjectId) -> f32 {
     let mut current_id = Some(page_id);
     let mut depth = 0usize;
@@ -537,6 +542,7 @@ fn add_xobject_to_page(
 ///
 /// # 功能
 /// - 基于旋转角度计算水印网格位置
+/// - 支持 PDF 页面旋转（90°、180°、270°）
 /// - 生成PDF操作指令来绘制网格中的水印
 /// - 裁剪超出页面可见区域的水印以优化性能
 ///
@@ -547,6 +553,7 @@ fn add_xobject_to_page(
 /// - `width`: 页面宽度
 /// - `height`: 页面高度
 /// - `text_w`: 文本宽度（预计算）
+/// - `page_rotation`: 页面旋转角度（度数，来自 PDF Rotate 属性）
 ///
 /// # 返回
 /// - `Ok(Vec<Operation>)`: PDF操作指令向量
@@ -558,6 +565,7 @@ fn build_watermark_grid_ops_xobject_optimized(
     width: f32,
     height: f32,
     text_w: f32,
+    page_rotation: f32,
 ) -> Result<Vec<Operation>, Box<dyn std::error::Error>> {
     let step_inner = text_w + GRID_HORIZONTAL_GAP;
     let step_outer = size * GRID_VERTICAL_MULTIPLIER;
@@ -571,7 +579,9 @@ fn build_watermark_grid_ops_xobject_optimized(
         .into());
     }
 
-    let rad = angle.to_radians();
+    // 叠加页面旋转角度，确保水印相对于内容方向正确
+    let effective_angle = angle + page_rotation;
+    let rad = effective_angle.to_radians();
     let (c, s) = (rad.cos(), rad.sin());
 
     let mut ops = Vec::new();
