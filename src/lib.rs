@@ -5,7 +5,7 @@ use lopdf::dictionary;
 use std::ffi::CStr;
 use std::os::raw::c_char;
 
-// --- FFI 接口：供 PHP 调用 ---
+// --- FFI 接口：供其他语言调用 ---
 
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn add_pdf_watermark(
