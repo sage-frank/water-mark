@@ -55,12 +55,18 @@ const MIN_GRID_STEP_SIZE: f32 = 0.1;
 
 /// 供C/其他语言调用的FFI接口
 /// 
+/// # Safety
+/// 
+/// 调用者必须确保所有传入的指针 (`input_path`, `output_path`, `font_path`, 
+/// `user_name`, `date_str`) 都是有效的、指向以空字符结尾的 C 字符串（null-terminated）。
+/// 此外，这些指针在函数调用期间必须保持有效且不被修改。
+///
 /// # 参数
-/// - `input_path`: 输入PDF文件路径（C字符串）
-/// - `output_path`: 输出PDF文件路径（C字符串）
-/// - `font_path`: 字体文件路径（C字符串）
-/// - `user_name`: 用户名（C字符串）
-/// - `date_str`: 日期字符串（C字符串）
+/// - `input_path`: 输入PDF文件路径
+/// - `output_path`: 输出PDF文件路径
+/// - `font_path`: 字体文件路径
+/// - `user_name`: 用户名
+/// - `date_str`: 日期字符串
 ///
 /// # 返回值
 /// - `0`: 成功
@@ -68,7 +74,7 @@ const MIN_GRID_STEP_SIZE: f32 = 0.1;
 /// - `-2`: 空指针参数
 /// - `-3`: UTF-8编码错误
 #[unsafe(no_mangle)]
-pub extern "C" fn add_pdf_watermark(
+pub unsafe extern "C" fn add_pdf_watermark(
     input_path: *const c_char,
     output_path: *const c_char,
     font_path: *const c_char,
@@ -172,7 +178,7 @@ pub fn run_watermark_process(
     output_path: &str,
     font_path: &str,
     text: &str,
-) -> Result<String, Box<dyn std::error::Error>> {
+) -> Result<(), Box<dyn std::error::Error>> {
     // 加载 PDF
     let mut doc = Document::load(input_path)?;
 
@@ -256,14 +262,14 @@ pub fn run_watermark_process(
         }
     }
 
-    doc.save(&output_path)?;
+    doc.save(output_path)?;
 
     // 验证文件确实保存
     if !Path::new(output_path).exists() {
         return Err("输出文件保存失败".into());
     }
 
-    Ok(output_path.to_string())
+    Ok(())
 }
 
 // ============================================================================
@@ -424,14 +430,12 @@ fn page_size(doc: &Document, page_id: ObjectId) -> Option<(f32, f32)> {
         Object::Stream(s) => &s.dict,
         _ => return None,
     };
-    if let Ok(Object::Array(arr)) = dict.get(b"MediaBox") {
-        if arr.len() >= 4 {
+    if let Ok(Object::Array(arr)) = dict.get(b"MediaBox") && arr.len() >= 4 {
             let llx = obj_to_f32(&arr[0]);
             let lly = obj_to_f32(&arr[1]);
             let urx = obj_to_f32(&arr[2]);
             let ury = obj_to_f32(&arr[3]);
             return Some((urx - llx, ury - lly));
-        }
     }
     None
 }
@@ -439,7 +443,7 @@ fn page_size(doc: &Document, page_id: ObjectId) -> Option<(f32, f32)> {
 /// 将PDF对象转换为f32
 fn obj_to_f32(o: &Object) -> f32 {
     match o {
-        Object::Real(r) => *r as f32,
+        Object::Real(r) => *r,
         Object::Integer(i) => *i as f32,
         _ => 0.0,
     }
