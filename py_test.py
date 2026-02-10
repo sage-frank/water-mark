@@ -2,9 +2,25 @@ import ctypes
 from ctypes import c_char_p, c_int32
 import os
 
+import platform
+
 # 1. 加载动态链接库
-# Linux 下是 libwater_mark.so, Windows 下是 water_mark.dll
-lib_path = os.path.abspath("./target/release/libwater_mark.so")
+# 自动检测系统类型选择正确的库文件
+system_name = platform.system()
+if system_name == "Windows":
+    lib_name = "water_mark.dll"
+elif system_name == "Darwin":
+    lib_name = "libwater_mark.dylib"
+else:
+    lib_name = "libwater_mark.so"
+
+lib_path = os.path.abspath(os.path.join("./target/release", lib_name))
+
+if not os.path.exists(lib_path):
+    print(f"Error: Library file not found at {lib_path}")
+    print("Please run 'cargo build --release' first.")
+    exit(1)
+
 lib = ctypes.CDLL(lib_path)
 
 # 2. 定义函数签名 (Argtypes & Restype)
