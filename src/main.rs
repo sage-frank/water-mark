@@ -19,9 +19,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     
     // 2. 调用库中的核心逻辑
     match run_watermark_process(input_path, output_path, font_path, &text) {
-        Ok(output) => {
+        Ok(_) => {
             let duration = start_time.elapsed();
-            println!("Rust 矢量水印生成成功！保存为 {}", output);
+            println!("Rust 矢量水印生成成功！保存为 {}", output_path);
             println!("总耗时: {:.2?}", duration);
         },
         Err(e) => {
