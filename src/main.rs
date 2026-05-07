@@ -9,7 +9,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let args: Vec<String> = env::args().collect();
     let input_path = args.get(1).map(|s| s.as_str()).unwrap_or("in.pdf");
     let output_path = args.get(2).map(|s| s.as_str()).unwrap_or("out.pdf");
-    let font_path = ".\\STSongStd-Light-Acro\\STSongStd-Light-Acro.otf";
+    let font_path = "./STSongStd-Light-Acro/STSongStd-Light-Acro.otf";
     
     let name = "张三";
     let date = "2026-02-05";

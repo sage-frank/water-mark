@@ -27,10 +27,10 @@ const WATERMARK_ANGLE_DEG: f32 = 60.0;
 
 /// 水印网格中心在页面X轴的偏移（用于视觉居中调整）
 /// 根据字体和角度微调，使水印视觉上更居中
-const CENTER_X_OFFSET: f32 = 0.0;
+const CENTER_X_OFFSET: f32 = 100.0;
 
 /// 水印网格中心在页面Y轴的偏移（用于视觉居中调整）
-const CENTER_Y_OFFSET: f32 = 0.0;
+const CENTER_Y_OFFSET: f32 = -50.0;
 
 /// 覆盖范围倍数（相对于页面对角线长度）
 /// 较大的值能确保页面各个角落都被水印覆盖，但也会增加计算量
