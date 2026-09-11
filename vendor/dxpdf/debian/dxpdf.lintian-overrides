@@ -1,0 +1,31 @@
+# Lintian overrides, shipped in the package at
+# /usr/share/lintian/overrides/dxpdf. Everything here is a tag that cannot be
+# fixed without changing what dxpdf is; CI suppresses nothing beyond this file,
+# so any *new* error or warning fails the build.
+#
+# Each line names a tag and nothing else. Writing the context as well — the
+# form `dxpdf: embedded-library expat [usr/bin/dxpdf]` that lintian itself
+# prints — is not portable across architectures: it matched exactly on an arm64
+# build and came back as `mismatched-override` on amd64, failing the release.
+# Which C-library fingerprints lintian finds inside a statically linked binary
+# is a property of that build, so an override that has to predict them will
+# eventually be wrong. A bare tag name matches every instance, and an override
+# that matches nothing is only a note, not a failure — both measured against
+# lintian 2.116.
+
+# Skia is compiled from source by `skia-bindings` and statically links its own
+# copies of several C libraries; on the arm64 build the ones lintian recognises
+# are expat, freetype and libjpeg. That is deliberate rather than an oversight:
+# `skia-safe`'s `embed-freetype` feature exists because linking the host
+# FreeType made dxpdf abort at load time with "undefined symbol:
+# FT_Palette_Data_Get" on any machine whose FreeType predated the build's, and
+# `scripts/verify_deb.py` fails the build if FreeType ever reappears in
+# Depends. Unbundling them needs a Debian-packaged Skia, which does not exist —
+# the same fact that keeps this package out of the Debian archive (issue #92).
+dxpdf: embedded-library
+
+# The tag wants the first changelog entry to close an ITP bug. This package is
+# built upstream and attached to a GitHub release; it is not an upload to the
+# Debian archive, so it closes nothing. Debian RFP #1142914 stays open, and
+# claiming otherwise in the changelog would be false.
+dxpdf: initial-upload-closes-no-bugs

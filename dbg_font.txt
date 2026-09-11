@@ -1,0 +1,185 @@
+正在转换 DOCX → PDF (dxpdf/Skia): in.docx
+[1] 读取输入文件                359.80µs  (11464 字节)
+[2] patch_docx (预处理)           5.90ms
+      ├─ 解压/读取 zip 条目    :   799.30µs
+      ├─ 正则替换 XML          :   306.80µs
+      └─ 重新 Deflate 打包     :     4.76ms
+      （11464 字节 → 10881 字节）
+[3] dxpdf::docx::parse            6.90ms
+[2026-09-11T04:12:36.446Z DEBUG dxpdf::render]   resolve:  253.7µs
+[2026-09-11T04:12:36.447Z DEBUG dxpdf::render::fonts::catalog] [font] catalogue: 212 host families
+[2026-09-11T04:12:36.458Z DEBUG dxpdf::render::fonts] [font] 'Arial' Absent/Absent → system family 'Arial'
+[2026-09-11T04:12:36.459Z DEBUG dxpdf::render::fonts] [font] 'Arial' On/Absent → system family 'Arial'
+[2026-09-11T04:12:36.470Z DEBUG dxpdf::render::fonts] [font] 'Arial' Absent/On → system family 'Arial'
+[2026-09-11T04:12:36.470Z DEBUG dxpdf::render::fonts] [font] 'Arial' On/On → system family 'Arial'
+[2026-09-11T04:12:36.471Z DEBUG dxpdf::render::fonts] [font] '等线' Absent/Absent → system family '等线'
+[2026-09-11T04:12:36.471Z DEBUG dxpdf::render::fonts] [font] '等线' On/Absent → system family '等线'
+[2026-09-11T04:12:36.471Z DEBUG dxpdf::render::fonts] [font] '等线' Absent/On → system family '等线'
+[2026-09-11T04:12:36.471Z DEBUG dxpdf::render::fonts] [font] '等线' On/On → system family '等线'
+[2026-09-11T04:12:36.471Z DEBUG dxpdf::render]   registry: 25.0124ms
+[2026-09-11T04:12:36.471Z DEBUG dxpdf::render::fonts] [font] 'Times New Roman' Absent/Absent → system family 'Times New Roman'
+[2026-09-11T04:12:36.473Z DEBUG dxpdf::render::fonts] [font] 'Microsoft YaHei UI' On/Absent → system family 'Microsoft YaHei UI'
+[2026-09-11T04:12:36.476Z DEBUG dxpdf::render::fonts] [font] 'Microsoft YaHei UI' Absent/Absent → system family 'Microsoft YaHei UI'
+[2026-09-11T04:12:36.518Z DEBUG dxpdf::render::layout::section::layout] [layout] block[0] para style=None text="网" cursor_y=72.0 col=0 floats=0 fwd_floats=0
+[2026-09-11T04:12:36.518Z DEBUG dxpdf::render::layout::section::layout] [layout]   page_chunk[0] col_chunk[0] placed at y=72.0 x=72.0 height=63.6
+[2026-09-11T04:12:36.518Z DEBUG dxpdf::render::layout::section::layout] [layout] block[1] para style=Some(StyleId("1")) text="一、" cursor_y=135.6 col=0 floats=0 fwd_floats=0
+[2026-09-11T04:12:36.518Z DEBUG dxpdf::render::layout::section::layout] [layout]   page_chunk[0] col_chunk[0] placed at y=116.6 x=72.0 height=53.4
+[2026-09-11T04:12:36.518Z DEBUG dxpdf::render::layout::section::layout] [layout] block[2] para style=Some(StyleId("2")) text="1.1 " cursor_y=170.1 col=0 floats=0 fwd_floats=0
+[2026-09-11T04:12:36.518Z DEBUG dxpdf::render::layout::section::layout] [layout]   page_chunk[0] col_chunk[0] placed at y=163.1 x=72.0 height=46.4
+[2026-09-11T04:12:36.518Z DEBUG dxpdf::render::layout::section::layout] [layout] block[3] para style=None text="随" cursor_y=209.4 col=0 floats=0 fwd_floats=0
+[2026-09-11T04:12:36.518Z DEBUG dxpdf::render::layout::section::layout] [layout] block[4] para style=None text="资" cursor_y=265.7 col=0 floats=0 fwd_floats=0
+[2026-09-11T04:12:36.519Z DEBUG dxpdf::render::layout::section::layout] [layout] block[5] para style=Some(StyleId("2")) text="1.2 " cursor_y=322.0 col=0 floats=0 fwd_floats=0
+[2026-09-11T04:12:36.519Z DEBUG dxpdf::render::layout::section::layout] [layout]   page_chunk[0] col_chunk[0] placed at y=316.0 x=72.0 height=46.4
+[2026-09-11T04:12:36.519Z DEBUG dxpdf::render::layout::section::layout] [layout] block[6] para style=None text="•" cursor_y=362.4 col=0 floats=0 fwd_floats=0
+[2026-09-11T04:12:36.519Z DEBUG dxpdf::render::layout::section::layout] [layout] block[7] para style=None text="•" cursor_y=401.9 col=0 floats=0 fwd_floats=0
+[2026-09-11T04:12:36.519Z DEBUG dxpdf::render::layout::section::layout] [layout] block[8] para style=None text="•" cursor_y=441.5 col=0 floats=0 fwd_floats=0
+[2026-09-11T04:12:36.519Z DEBUG dxpdf::render::layout::section::layout] [layout] block[9] para style=None text="•" cursor_y=481.0 col=0 floats=0 fwd_floats=0
+[2026-09-11T04:12:36.519Z DEBUG dxpdf::render::layout::section::layout] [layout] block[10] para style=None text="•" cursor_y=520.5 col=0 floats=0 fwd_floats=0
+[2026-09-11T04:12:36.519Z DEBUG dxpdf::render::layout::section::layout] [layout]   page_chunk[0] col_chunk[0] placed at y=514.5 x=72.0 height=28.8
+[2026-09-11T04:12:36.519Z DEBUG dxpdf::render::layout::section::layout] [layout] block[11] para style=Some(StyleId("2")) text="1.3 " cursor_y=543.3 col=0 floats=0 fwd_floats=0
+[2026-09-11T04:12:36.519Z DEBUG dxpdf::render::layout::section::layout] [layout]   page_chunk[0] col_chunk[0] placed at y=537.3 x=72.0 height=46.4
+[2026-09-11T04:12:36.519Z DEBUG dxpdf::render::layout::section::layout] [layout] block[12] para style=None text="本" cursor_y=583.7 col=0 floats=0 fwd_floats=0
+[2026-09-11T04:12:36.519Z DEBUG dxpdf::render::layout::section::layout] [layout] block[13] para style=Some(StyleId("1")) text="二、" cursor_y=640.0 col=0 floats=0 fwd_floats=0
+[2026-09-11T04:12:36.519Z DEBUG dxpdf::render::layout::section::layout] [layout]   page_chunk[0] col_chunk[0] placed at y=634.0 x=72.0 height=53.4
+[2026-09-11T04:12:36.519Z DEBUG dxpdf::render::layout::section::layout] [layout] block[14] para style=Some(StyleId("2")) text="2.1 " cursor_y=687.4 col=0 floats=0 fwd_floats=0
+[2026-09-11T04:12:36.519Z DEBUG dxpdf::render::layout::section::layout] [layout]   page_chunk[0] col_chunk[0] placed at y=680.4 x=72.0 height=46.4
+[2026-09-11T04:12:36.519Z DEBUG dxpdf::render::layout::section::layout] [layout] block[15] para style=None text="资" cursor_y=726.8 col=0 floats=0 fwd_floats=0
+[2026-09-11T04:12:36.519Z DEBUG dxpdf::render::layout::section::layout] [layout]   paragraph split: 2/4 lines at y=720.8
+[2026-09-11T04:12:36.520Z DEBUG dxpdf::render::layout::section::layout] [layout]   paragraph split: 2/2 lines at y=72.0
+[2026-09-11T04:12:36.520Z DEBUG dxpdf::render::layout::section::layout] [layout] block[16] para style=None text="区" cursor_y=111.5 col=0 floats=0 fwd_floats=0
+[2026-09-11T04:12:36.520Z DEBUG dxpdf::render::layout::section::layout] [layout] block[17] para style=Some(StyleId("2")) text="2.2 " cursor_y=151.1 col=0 floats=0 fwd_floats=0
+[2026-09-11T04:12:36.520Z DEBUG dxpdf::render::layout::section::layout] [layout]   page_chunk[0] col_chunk[0] placed at y=145.1 x=72.0 height=46.4
+[2026-09-11T04:12:36.520Z DEBUG dxpdf::render::layout::section::layout] [layout] block[18] para style=None text="•" cursor_y=191.4 col=0 floats=0 fwd_floats=0
+[2026-09-11T04:12:36.520Z DEBUG dxpdf::render::layout::section::layout] [layout]   page_chunk[0] col_chunk[0] placed at y=185.4 x=72.0 height=28.8
+[2026-09-11T04:12:36.520Z DEBUG dxpdf::render::layout::section::layout] [layout] block[19] para style=None text="•" cursor_y=214.2 col=0 floats=0 fwd_floats=0
+[2026-09-11T04:12:36.520Z DEBUG dxpdf::render::layout::section::layout] [layout]   page_chunk[0] col_chunk[0] placed at y=208.2 x=72.0 height=28.8
+[2026-09-11T04:12:36.520Z DEBUG dxpdf::render::layout::section::layout] [layout] block[20] para style=None text="•" cursor_y=237.0 col=0 floats=0 fwd_floats=0
+[2026-09-11T04:12:36.520Z DEBUG dxpdf::render::layout::section::layout] [layout] block[21] para style=None text="•" cursor_y=276.5 col=0 floats=0 fwd_floats=0
+[2026-09-11T04:12:36.520Z DEBUG dxpdf::render::layout::section::layout] [layout] block[22] para style=None text="•" cursor_y=316.0 col=0 floats=0 fwd_floats=0
+[2026-09-11T04:12:36.520Z DEBUG dxpdf::render::layout::section::layout] [layout] block[23] para style=None text="•" cursor_y=355.6 col=0 floats=0 fwd_floats=0
+[2026-09-11T04:12:36.520Z DEBUG dxpdf::render::layout::section::layout] [layout] block[24] para style=Some(StyleId("1")) text="三、" cursor_y=395.1 col=0 floats=0 fwd_floats=0
+[2026-09-11T04:12:36.520Z DEBUG dxpdf::render::layout::section::layout] [layout]   page_chunk[0] col_chunk[0] placed at y=389.1 x=72.0 height=53.4
+[2026-09-11T04:12:36.520Z DEBUG dxpdf::render::layout::section::layout] [layout] block[25] para style=None text="本" cursor_y=442.5 col=0 floats=0 fwd_floats=0
+[2026-09-11T04:12:36.520Z DEBUG dxpdf::render::layout::section::layout] [layout] block[26] para style=Some(StyleId("2")) text="3.1 " cursor_y=482.0 col=0 floats=0 fwd_floats=0
+[2026-09-11T04:12:36.520Z DEBUG dxpdf::render::layout::section::layout] [layout]   page_chunk[0] col_chunk[0] placed at y=476.0 x=72.0 height=46.4
+[2026-09-11T04:12:36.520Z DEBUG dxpdf::render::layout::section::layout] [layout] block[27] para style=None text="作" cursor_y=522.4 col=0 floats=0 fwd_floats=0
+[2026-09-11T04:12:36.520Z DEBUG dxpdf::render::layout::section::layout] [layout] block[28] para style=Some(StyleId("2")) text="3.2 " cursor_y=595.5 col=0 floats=0 fwd_floats=0
+[2026-09-11T04:12:36.520Z DEBUG dxpdf::render::layout::section::layout] [layout]   page_chunk[0] col_chunk[0] placed at y=589.5 x=72.0 height=46.4
+[2026-09-11T04:12:36.520Z DEBUG dxpdf::render::layout::section::layout] [layout] block[29] para style=None text="集" cursor_y=635.9 col=0 floats=0 fwd_floats=0
+[2026-09-11T04:12:36.520Z DEBUG dxpdf::render::layout::section::layout] [layout]   page_chunk[0] col_chunk[0] placed at y=629.9 x=72.0 height=28.8
+[2026-09-11T04:12:36.520Z DEBUG dxpdf::render::layout::section::layout] [layout] block[30] para style=None text="•" cursor_y=658.6 col=0 floats=0 fwd_floats=0
+[2026-09-11T04:12:36.520Z DEBUG dxpdf::render::layout::section::layout] [layout] block[31] para style=None text="•" cursor_y=698.2 col=0 floats=0 fwd_floats=0
+[2026-09-11T04:12:36.521Z DEBUG dxpdf::render::layout::section::layout] [layout] block[32] para style=None text="•" cursor_y=737.7 col=0 floats=0 fwd_floats=0
+[2026-09-11T04:12:36.521Z DEBUG dxpdf::render::layout::section::layout] [layout] block[33] para style=None text="•" cursor_y=117.5 col=0 floats=0 fwd_floats=0
+[2026-09-11T04:12:36.521Z DEBUG dxpdf::render::layout::section::layout] [layout] block[34] para style=Some(StyleId("2")) text="3.3 " cursor_y=157.1 col=0 floats=0 fwd_floats=0
+[2026-09-11T04:12:36.521Z DEBUG dxpdf::render::layout::section::layout] [layout]   page_chunk[0] col_chunk[0] placed at y=151.1 x=72.0 height=46.4
+[2026-09-11T04:12:36.521Z DEBUG dxpdf::render::layout::section::layout] [layout] block[35] para style=None text="对" cursor_y=197.4 col=0 floats=0 fwd_floats=0
+[2026-09-11T04:12:36.521Z DEBUG dxpdf::render::layout::section::layout] [layout] block[36] para style=Some(StyleId("2")) text="3.4 " cursor_y=253.7 col=0 floats=0 fwd_floats=0
+[2026-09-11T04:12:36.521Z DEBUG dxpdf::render::layout::section::layout] [layout]   page_chunk[0] col_chunk[0] placed at y=247.7 x=72.0 height=46.4
+[2026-09-11T04:12:36.521Z DEBUG dxpdf::render::layout::section::layout] [layout] block[37] para style=None text="采" cursor_y=294.1 col=0 floats=0 fwd_floats=0
+[2026-09-11T04:12:36.521Z DEBUG dxpdf::render::layout::section::layout] [layout] block[38] para style=Some(StyleId("2")) text="3.5 " cursor_y=350.4 col=0 floats=0 fwd_floats=0
+[2026-09-11T04:12:36.521Z DEBUG dxpdf::render::layout::section::layout] [layout]   page_chunk[0] col_chunk[0] placed at y=344.4 x=72.0 height=46.4
+[2026-09-11T04:12:36.521Z DEBUG dxpdf::render::layout::section::layout] [layout] block[39] para style=None text="针" cursor_y=390.8 col=0 floats=0 fwd_floats=0
+[2026-09-11T04:12:36.521Z DEBUG dxpdf::render::layout::section::layout] [layout] block[40] para style=Some(StyleId("1")) text="四、" cursor_y=430.3 col=0 floats=0 fwd_floats=0
+[2026-09-11T04:12:36.521Z DEBUG dxpdf::render::layout::section::layout] [layout]   page_chunk[0] col_chunk[0] placed at y=424.3 x=72.0 height=53.4
+[2026-09-11T04:12:36.521Z DEBUG dxpdf::render::layout::section::layout] [layout] block[41] para style=Some(StyleId("2")) text="4.1 " cursor_y=477.8 col=0 floats=0 fwd_floats=0
+[2026-09-11T04:12:36.521Z DEBUG dxpdf::render::layout::section::layout] [layout]   page_chunk[0] col_chunk[0] placed at y=470.8 x=72.0 height=46.4
+[2026-09-11T04:12:36.521Z DEBUG dxpdf::render::layout::section::layout] [layout] block[42] para style=None text="采" cursor_y=517.1 col=0 floats=0 fwd_floats=0
+[2026-09-11T04:12:36.521Z DEBUG dxpdf::render::layout::section::layout] [layout] block[43] para style=None text="技" cursor_y=573.4 col=0 floats=0 fwd_floats=0
+[2026-09-11T04:12:36.521Z DEBUG dxpdf::render::layout::section::layout] [layout] block[44] para style=Some(StyleId("2")) text="4.2 " cursor_y=613.0 col=0 floats=0 fwd_floats=0
+[2026-09-11T04:12:36.521Z DEBUG dxpdf::render::layout::section::layout] [layout]   page_chunk[0] col_chunk[0] placed at y=607.0 x=72.0 height=46.4
+[2026-09-11T04:12:36.521Z DEBUG dxpdf::render::layout::section::layout] [layout] block[45] para style=None text="根" cursor_y=653.3 col=0 floats=0 fwd_floats=0
+[2026-09-11T04:12:36.521Z DEBUG dxpdf::render::layout::section::layout] [layout]   page_chunk[0] col_chunk[0] placed at y=647.3 x=72.0 height=28.8
+[2026-09-11T04:12:36.521Z DEBUG dxpdf::render::layout::section::layout] [layout] block[46] para style=None text="•" cursor_y=676.1 col=0 floats=0 fwd_floats=0
+[2026-09-11T04:12:36.522Z DEBUG dxpdf::render::layout::section::layout] [layout] block[47] para style=None text="•" cursor_y=715.6 col=0 floats=0 fwd_floats=0
+[2026-09-11T04:12:36.522Z DEBUG dxpdf::render::layout::section::layout] [layout] block[48] para style=None text="同" cursor_y=755.2 col=0 floats=0 fwd_floats=0
+[2026-09-11T04:12:36.522Z DEBUG dxpdf::render::layout::section::layout] [layout]   page_chunk[0] col_chunk[0] placed at y=72.0 x=72.0 height=28.8
+[2026-09-11T04:12:36.522Z DEBUG dxpdf::render::layout::section::layout] [layout] block[49] para style=Some(StyleId("2")) text="4.3 " cursor_y=100.8 col=0 floats=0 fwd_floats=0
+[2026-09-11T04:12:36.522Z DEBUG dxpdf::render::layout::section::layout] [layout]   page_chunk[0] col_chunk[0] placed at y=94.8 x=72.0 height=46.4
+[2026-09-11T04:12:36.522Z DEBUG dxpdf::render::layout::section::layout] [layout] block[50] para style=None text="基" cursor_y=141.1 col=0 floats=0 fwd_floats=0
+[2026-09-11T04:12:36.522Z DEBUG dxpdf::render::layout::section::layout] [layout] block[51] para style=Some(StyleId("2")) text="4.4 " cursor_y=214.2 col=0 floats=0 fwd_floats=0
+[2026-09-11T04:12:36.522Z DEBUG dxpdf::render::layout::section::layout] [layout]   page_chunk[0] col_chunk[0] placed at y=208.2 x=72.0 height=46.4
+[2026-09-11T04:12:36.522Z DEBUG dxpdf::render::layout::section::layout] [layout] block[52] para style=None text="•" cursor_y=254.6 col=0 floats=0 fwd_floats=0
+[2026-09-11T04:12:36.522Z DEBUG dxpdf::render::layout::section::layout] [layout] block[53] para style=None text="•" cursor_y=294.1 col=0 floats=0 fwd_floats=0
+[2026-09-11T04:12:36.522Z DEBUG dxpdf::render::layout::section::layout] [layout] block[54] para style=Some(StyleId("1")) text="五、" cursor_y=333.6 col=0 floats=0 fwd_floats=0
+[2026-09-11T04:12:36.522Z DEBUG dxpdf::render::layout::section::layout] [layout]   page_chunk[0] col_chunk[0] placed at y=327.6 x=72.0 height=53.4
+[2026-09-11T04:12:36.522Z DEBUG dxpdf::render::layout::section::layout] [layout] block[55] para style=Some(StyleId("2")) text="5.1 " cursor_y=381.1 col=0 floats=0 fwd_floats=0
+[2026-09-11T04:12:36.522Z DEBUG dxpdf::render::layout::section::layout] [layout]   page_chunk[0] col_chunk[0] placed at y=374.1 x=72.0 height=46.4
+[2026-09-11T04:12:36.522Z DEBUG dxpdf::render::layout::section::layout] [layout] block[56] para style=None text="1." cursor_y=420.5 col=0 floats=0 fwd_floats=0
+[2026-09-11T04:12:36.522Z DEBUG dxpdf::render::layout::section::layout] [layout] block[57] para style=None text="2." cursor_y=460.0 col=0 floats=0 fwd_floats=0
+[2026-09-11T04:12:36.522Z DEBUG dxpdf::render::layout::section::layout] [layout] block[58] para style=None text="3." cursor_y=499.5 col=0 floats=0 fwd_floats=0
+[2026-09-11T04:12:36.522Z DEBUG dxpdf::render::layout::section::layout] [layout] block[59] para style=Some(StyleId("2")) text="5.2 " cursor_y=539.0 col=0 floats=0 fwd_floats=0
+[2026-09-11T04:12:36.522Z DEBUG dxpdf::render::layout::section::layout] [layout]   page_chunk[0] col_chunk[0] placed at y=533.0 x=72.0 height=46.4
+[2026-09-11T04:12:36.522Z DEBUG dxpdf::render::layout::section::layout] [layout] block[60] para style=None text="1." cursor_y=579.4 col=0 floats=0 fwd_floats=0
+[2026-09-11T04:12:36.522Z DEBUG dxpdf::render::layout::section::layout] [layout] block[61] para style=None text="2." cursor_y=619.0 col=0 floats=0 fwd_floats=0
+[2026-09-11T04:12:36.522Z DEBUG dxpdf::render::layout::section::layout] [layout] block[62] para style=None text="3." cursor_y=658.5 col=0 floats=0 fwd_floats=0
+[2026-09-11T04:12:36.523Z DEBUG dxpdf::render::layout::section::layout] [layout] block[63] para style=None text="4." cursor_y=698.0 col=0 floats=0 fwd_floats=0
+[2026-09-11T04:12:36.523Z DEBUG dxpdf::render::layout::section::layout] [layout] block[64] para style=Some(StyleId("2")) text="5.3 " cursor_y=737.5 col=0 floats=0 fwd_floats=0
+[2026-09-11T04:12:36.523Z DEBUG dxpdf::render::layout::section::layout] [layout]   page_chunk[0] col_chunk[0] placed at y=72.0 x=72.0 height=46.4
+[2026-09-11T04:12:36.523Z DEBUG dxpdf::render::layout::section::layout] [layout] block[65] para style=None text="探" cursor_y=118.4 col=0 floats=0 fwd_floats=0
+[2026-09-11T04:12:36.523Z DEBUG dxpdf::render::layout::section::layout] [layout] block[66] para style=Some(StyleId("2")) text="5.4 " cursor_y=174.7 col=0 floats=0 fwd_floats=0
+[2026-09-11T04:12:36.523Z DEBUG dxpdf::render::layout::section::layout] [layout]   page_chunk[0] col_chunk[0] placed at y=168.7 x=72.0 height=46.4
+[2026-09-11T04:12:36.523Z DEBUG dxpdf::render::layout::section::layout] [layout] block[67] para style=None text="针" cursor_y=215.1 col=0 floats=0 fwd_floats=0
+[2026-09-11T04:12:36.523Z DEBUG dxpdf::render::layout::section::layout] [layout] block[68] para style=Some(StyleId("1")) text="六、" cursor_y=271.4 col=0 floats=0 fwd_floats=0
+[2026-09-11T04:12:36.523Z DEBUG dxpdf::render::layout::section::layout] [layout]   page_chunk[0] col_chunk[0] placed at y=265.4 x=72.0 height=53.4
+[2026-09-11T04:12:36.523Z DEBUG dxpdf::render::layout::section::layout] [layout] block[69] para style=Some(StyleId("2")) text="6.1 " cursor_y=318.8 col=0 floats=0 fwd_floats=0
+[2026-09-11T04:12:36.523Z DEBUG dxpdf::render::layout::section::layout] [layout]   page_chunk[0] col_chunk[0] placed at y=311.8 x=72.0 height=46.4
+[2026-09-11T04:12:36.523Z DEBUG dxpdf::render::layout::section::layout] [layout] block[70] para style=None text="•" cursor_y=358.2 col=0 floats=0 fwd_floats=0
+[2026-09-11T04:12:36.523Z DEBUG dxpdf::render::layout::section::layout] [layout] block[71] para style=None text="•" cursor_y=397.7 col=0 floats=0 fwd_floats=0
+[2026-09-11T04:12:36.523Z DEBUG dxpdf::render::layout::section::layout] [layout]   page_chunk[0] col_chunk[0] placed at y=391.7 x=72.0 height=28.8
+[2026-09-11T04:12:36.523Z DEBUG dxpdf::render::layout::section::layout] [layout] block[72] para style=None text="•" cursor_y=420.5 col=0 floats=0 fwd_floats=0
+[2026-09-11T04:12:36.523Z DEBUG dxpdf::render::layout::section::layout] [layout]   page_chunk[0] col_chunk[0] placed at y=414.5 x=72.0 height=28.8
+[2026-09-11T04:12:36.523Z DEBUG dxpdf::render::layout::section::layout] [layout] block[73] para style=None text="•" cursor_y=443.2 col=0 floats=0 fwd_floats=0
+[2026-09-11T04:12:36.523Z DEBUG dxpdf::render::layout::section::layout] [layout] block[74] para style=Some(StyleId("2")) text="6.2 " cursor_y=482.8 col=0 floats=0 fwd_floats=0
+[2026-09-11T04:12:36.523Z DEBUG dxpdf::render::layout::section::layout] [layout]   page_chunk[0] col_chunk[0] placed at y=476.8 x=72.0 height=46.4
+[2026-09-11T04:12:36.523Z DEBUG dxpdf::render::layout::section::layout] [layout] block[75] para style=None text="•" cursor_y=523.1 col=0 floats=0 fwd_floats=0
+[2026-09-11T04:12:36.523Z DEBUG dxpdf::render::layout::section::layout] [layout] block[76] para style=None text="•" cursor_y=562.7 col=0 floats=0 fwd_floats=0
+[2026-09-11T04:12:36.523Z DEBUG dxpdf::render::layout::section::layout] [layout] block[77] para style=None text="•" cursor_y=602.2 col=0 floats=0 fwd_floats=0
+[2026-09-11T04:12:36.523Z DEBUG dxpdf::render::layout::section::layout] [layout] block[78] para style=None text="•" cursor_y=641.7 col=0 floats=0 fwd_floats=0
+[2026-09-11T04:12:36.523Z DEBUG dxpdf::render::layout::section::layout] [layout] block[79] para style=Some(StyleId("1")) text="七、" cursor_y=681.3 col=0 floats=0 fwd_floats=0
+[2026-09-11T04:12:36.523Z DEBUG dxpdf::render::layout::section::layout] [layout]   page_chunk[0] col_chunk[0] placed at y=675.3 x=72.0 height=53.4
+[2026-09-11T04:12:36.523Z DEBUG dxpdf::render::layout::section::layout] [layout] block[80] para style=None text="本" cursor_y=728.7 col=0 floats=0 fwd_floats=0
+[2026-09-11T04:12:36.523Z DEBUG dxpdf::render::layout::section::layout] [layout]   page_chunk[0] col_chunk[0] placed at y=722.7 x=72.0 height=28.8
+[2026-09-11T04:12:36.524Z DEBUG dxpdf::render::layout::section::layout] [layout] block[81] para style=None text="•" cursor_y=751.5 col=0 floats=0 fwd_floats=0
+[2026-09-11T04:12:36.524Z DEBUG dxpdf::render::layout::section::layout] [layout] block[82] para style=None text="•" cursor_y=117.5 col=0 floats=0 fwd_floats=0
+[2026-09-11T04:12:36.524Z DEBUG dxpdf::render::layout::section::layout] [layout] block[83] para style=Some(StyleId("1")) text="八、" cursor_y=157.1 col=0 floats=0 fwd_floats=0
+[2026-09-11T04:12:36.524Z DEBUG dxpdf::render::layout::section::layout] [layout]   page_chunk[0] col_chunk[0] placed at y=151.1 x=72.0 height=53.4
+[2026-09-11T04:12:36.524Z DEBUG dxpdf::render::layout::section::layout] [layout] block[84] para style=None text="本" cursor_y=204.5 col=0 floats=0 fwd_floats=0
+[2026-09-11T04:12:36.524Z DEBUG dxpdf::render::layout::section::layout] [layout] block[85] para style=None text="|" cursor_y=277.5 col=0 floats=0 fwd_floats=0
+[2026-09-11T04:12:36.524Z DEBUG dxpdf::render::layout::section::layout] [layout]   page_chunk[0] col_chunk[0] placed at y=271.5 x=72.0 height=28.8
+[2026-09-11T04:12:36.526Z DEBUG dxpdf::render]   layout:   55.231ms (6 pages)
+[2026-09-11T04:12:36.573Z DEBUG dxpdf::render::fonts::opentype::collection] [font] carved face 1 of 2 out of a collection (19704352 bytes → 19583720 bytes)
+[2026-09-11T04:12:36.615Z DEBUG dxpdf::render::fonts::opentype::collection] [font] carved face 1 of 2 out of a collection (16883552 bytes → 16759172 bytes)
+[2026-09-11T04:12:36.636Z DEBUG dxpdf::render]   subset:   109.626ms
+[2026-09-11T04:12:36.636Z INFO  dxpdf::render] font subset: 5/5 typefaces subsetted (38784412 bytes saved, 0 unchanged)
+[2026-09-11T04:12:36.636Z DEBUG dxpdf::render::painter]   [paint] outline_tree: 69.9µs
+[2026-09-11T04:12:36.636Z DEBUG dxpdf::render::painter]   [paint] new_document: 52.1µs
+[2026-09-11T04:12:38.935Z DEBUG dxpdf::render::painter]   [paint] page 0 cmds: annot=0.0ms(6) outline=0.0ms(12) text=2298.3ms(582) || text[blob=2296.6ms(582)] | glyphs=684 new_chars=264 | blob hit=236 new=346 fail=0 | make=61.3ms(346) first_make=0.43ms | probe cmap=0.4ms(346) advance=0.6ms(346) | draw miss=2231.0ms hit=2.1ms | new_fonts=8 skipped=0
+[2026-09-11T04:12:38.936Z DEBUG dxpdf::render::painter]   [paint] page 0: begin=64.8µs draw=2.298831s end=973.5µs
+[2026-09-11T04:12:40.027Z DEBUG dxpdf::render::painter]   [paint] page 1 cmds: annot=0.0ms(4) outline=0.0ms(8) text=1090.5ms(628) || text[blob=1089.4ms(628)] | glyphs=791 new_chars=119 | blob hit=417 new=211 fail=0 | make=28.3ms(211) first_make=0.43ms | probe cmap=0.2ms(211) advance=0.3ms(211) | draw miss=1057.4ms hit=2.4ms | new_fonts=1 skipped=0
+[2026-09-11T04:12:40.028Z DEBUG dxpdf::render::painter]   [paint] page 1: begin=7.2µs draw=1.0908834s end=989.3µs
+[2026-09-11T04:12:40.800Z DEBUG dxpdf::render::painter]   [paint] page 2 cmds: annot=0.0ms(6) outline=0.0ms(12) text=771.9ms(624) || text[blob=771.0ms(624)] | glyphs=763 new_chars=75 | blob hit=443 new=181 fail=0 | make=22.5ms(181) first_make=0.43ms | probe cmap=0.1ms(181) advance=0.2ms(181) | draw miss=745.3ms hit=2.1ms | new_fonts=0 skipped=0
+[2026-09-11T04:12:40.801Z DEBUG dxpdf::render::painter]   [paint] page 2: begin=5.7µs draw=772.1939ms end=987µs
+[2026-09-11T04:12:41.342Z DEBUG dxpdf::render::painter]   [paint] page 3 cmds: annot=0.0ms(5) outline=0.0ms(10) text=540.5ms(637) || text[blob=539.8ms(637)] | glyphs=754 new_chars=41 | blob hit=496 new=141 fail=0 | make=17.8ms(141) first_make=0.43ms | probe cmap=0.1ms(141) advance=0.2ms(141) | draw miss=519.3ms hit=1.9ms | new_fonts=0 skipped=0
+[2026-09-11T04:12:41.343Z DEBUG dxpdf::render::painter]   [paint] page 3: begin=4.2µs draw=540.7851ms end=966.9µs
+[2026-09-11T04:12:41.851Z DEBUG dxpdf::render::painter]   [paint] page 4 cmds: annot=0.0ms(6) outline=0.0ms(12) text=508.2ms(608) || text[blob=507.4ms(608)] | glyphs=689 new_chars=48 | blob hit=474 new=134 fail=0 | make=15.9ms(134) first_make=0.43ms | probe cmap=0.1ms(134) advance=0.2ms(134) | draw miss=488.7ms hit=2.0ms | new_fonts=0 skipped=0
+[2026-09-11T04:12:41.852Z DEBUG dxpdf::render::painter]   [paint] page 4: begin=4.3µs draw=508.4494ms end=774.1µs
+[2026-09-11T04:12:41.991Z DEBUG dxpdf::render::painter]   [paint] page 5 cmds: annot=0.0ms(1) outline=0.0ms(2) text=138.9ms(271) || text[blob=138.6ms(271)] | glyphs=340 new_chars=14 | blob hit=218 new=53 fail=0 | make=4.2ms(53) first_make=0.43ms | probe cmap=0.0ms(53) advance=0.1ms(53) | draw miss=133.4ms hit=0.7ms | new_fonts=0 skipped=0
+[2026-09-11T04:12:41.997Z DEBUG dxpdf::render::painter]   [paint] page 5: begin=6.1µs draw=144.8683ms end=461.3µs
+[2026-09-11T04:12:41.997Z DEBUG dxpdf::render::painter]   [paint] ALL cmds: annot=0.1ms(28) outline=0.2ms(56) text=5348.2ms(3350) || text[blob=5342.8ms(3350)]
+[2026-09-11T04:12:42.035Z DEBUG dxpdf::render::painter]   [paint] doc.close(): 37.6232ms
+[2026-09-11T04:12:42.036Z DEBUG dxpdf::render]   paint:    5.3998832s
+[4] dxpdf::render::render          5.60s
+      （上面 debug 行给出内部 resolve/registry/layout/subset/paint 明细）
+[5] 写出 tmp-dbg-simhei.pdf         1.36ms  (408829 字节)
+[6] 总耗时                         5.61s
+    ---- 占比 ----
+      读取输入                     359.80µs    0.0%
+      patch_docx 预处理             5.86ms    0.1%
+        ├ 解压 zip               799.30µs    0.0%
+        ├ 改 XML                306.80µs    0.0%
+        └ 重打包                    4.76ms    0.1%
+      parse 解析                   6.90ms    0.1%
+      render 渲染                   5.60s   99.7%
+      写文件                        1.36ms    0.0%
+转换成功！保存为 tmp-dbg-simhei.pdf

@@ -1,0 +1,91 @@
+name: Publish Debian packages
+
+# Separate from `publish.yml` (crates.io) on purpose: a Debian build that fails
+# must not be able to hold up the crate publish, and the two need completely
+# different environments — this one runs inside a Debian container, that one on
+# the runner.
+on:
+  release:
+    types: [published]
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: Build .deb (${{ matrix.target.arch }})
+    runs-on: ${{ matrix.target.runner }}
+    container: debian:12-slim
+    strategy:
+      fail-fast: false
+      matrix:
+        target:
+          # Both native — no QEMU. Same pair of runners the wheel matrix in
+          # `python.yml` uses, for the same reason.
+          - arch: amd64
+            runner: ubuntu-latest
+          - arch: arm64
+            runner: ubuntu-24.04-arm
+    steps:
+      # Keep this list, the clang version, and the cargo-deb invocation in step
+      # with the `build-deb` job in `ci.yml` — that job is what validates this
+      # one on every pull request, and it can only do that while the two agree.
+      # The reasoning behind the container base and clang-19 is written out
+      # there rather than repeated here.
+      - name: Install build dependencies
+        run: |
+          apt-get update
+          apt-get install -y --no-install-recommends \
+            build-essential clang-19 libclang-19-dev ninja-build python3 \
+            curl ca-certificates git pkg-config \
+            libfontconfig1-dev libfreetype-dev lintian
+
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Install cargo-deb
+        run: cargo install cargo-deb --locked
+
+      - name: Build package
+        run: cargo deb
+        env:
+          CC: clang-19
+          CXX: clang++-19
+
+      - name: Verify package contents
+        run: python3 scripts/verify_deb.py target/debian/*.deb
+
+      - name: Lint package
+        run: lintian --fail-on error,warning --tag-display-limit 0 target/debian/*.deb
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: deb-${{ matrix.target.arch }}
+          path: target/debian/*.deb
+
+  publish:
+    name: Attach to release
+    runs-on: ubuntu-latest
+    needs: build
+    permissions:
+      # `gh release upload` writes to the release this workflow was triggered
+      # by; nothing else here needs write access.
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+
+      # `--clobber` so that re-running this workflow on a release replaces the
+      # assets instead of failing on the second attempt.
+      - name: Upload to the GitHub release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          ls -l dist
+          gh release upload "${{ github.event.release.tag_name }}" dist/*.deb \
+            --clobber --repo "$GITHUB_REPOSITORY"

@@ -1,0 +1,122 @@
+.\" Manual page for dxpdf. Debian Policy §12.1 requires one for every program
+.\" in /usr/bin, so this file is a hard prerequisite of the .deb rather than a
+.\" nicety, and tests/packaging.rs keeps it in step with `dxpdf --help`.
+.\"
+.\" The source string below is deliberately just "dxpdf" with no version: this
+.\" file is not generated, so an embedded version would be wrong from the first
+.\" release after anyone forgot to bump it, and a stale version is worse than
+.\" none. The date is the date this page last changed, which is what a man page
+.\" date is supposed to mean.
+.\"
+.\" Hyphens are written \- throughout. A bare - is a typographic hyphen that
+.\" does not survive copy-paste and is not found by `man -K`.
+.TH DXPDF 1 "2026-08-10" "dxpdf" "User Commands"
+.SH NAME
+dxpdf \- convert DOCX documents to PDF
+.SH SYNOPSIS
+.B dxpdf
+.RI [ OPTIONS ]
+.I INPUT
+.SH DESCRIPTION
+.B dxpdf
+converts a Word document in Office Open XML format
+.RI ( .docx )
+to PDF. It reads
+.IR INPUT ,
+lays the document out using the fonts installed on this machine, and writes a
+PDF.
+.PP
+Layout is performed by dxpdf itself and rendering by Skia; no copy of Word,
+LibreOffice, or any other office suite is involved, and nothing is sent over
+the network.
+.PP
+If no output path is given, the PDF is written beside the input with its
+extension replaced, so
+.B dxpdf report.docx
+produces
+.IR report.pdf .
+An existing file at that path is overwritten without prompting.
+.SH OPTIONS
+.TP
+.BR \-o ", " \-\-output " " \fIFILE\fR
+Write the PDF to
+.IR FILE
+instead of to the input path with a
+.I .pdf
+extension.
+.TP
+.BR \-\-image\-dpi " " \fIDPI\fR
+Resolution, in pixels per inch, that embedded raster images are resampled to.
+Higher values give crisper images and a larger PDF. The default is
+.BR 220 ,
+matching Word, and the accepted range is
+.B 1
+to
+.BR 2400 .
+A value outside that range is rejected rather than clamped, so that a mistyped
+figure is reported instead of silently producing an unreadable document.
+.TP
+.BR \-h ", " \-\-help
+Print a summary of these options and exit.
+.TP
+.BR \-V ", " \-\-version
+Print the version and exit.
+.SH EXIT STATUS
+.TP
+.B 0
+The document was converted and written.
+.TP
+.B 1
+Conversion failed. A description of the failure is printed to standard error,
+prefixed with
+.BR "error: " .
+.SH ENVIRONMENT
+.TP
+.B RUST_LOG
+Controls diagnostic logging, which goes to standard error. The default is
+.BR warn ,
+which reports document features dxpdf does not yet support.
+.B RUST_LOG=debug
+additionally prints how long each phase took and which typeface every requested
+font family resolved to \(em the first thing to look at when output uses the
+wrong font.
+.SH EXAMPLES
+.PP
+Convert a document, writing
+.IR report.pdf :
+.PP
+.RS 4
+.B dxpdf report.docx
+.RE
+.PP
+Convert to an explicit path at print resolution:
+.PP
+.RS 4
+.B dxpdf report.docx \-o /tmp/out.pdf \-\-image\-dpi 300
+.RE
+.PP
+Find out why a font looks wrong:
+.PP
+.RS 4
+.B RUST_LOG=debug dxpdf report.docx
+.RE
+.SH NOTES
+dxpdf resolves fonts through fontconfig, using the fonts installed on the
+machine it runs on, plus any fonts embedded in the document itself. A document
+that names a font this machine does not have is rendered with a substitute, and
+on a system with no fonts installed at all the resulting PDF will contain no
+readable text. Installing
+.B fonts\-liberation2
+gives metric\-compatible stand\-ins for Arial, Times New Roman, and Courier New,
+which is what most documents ask for.
+.SH SEE ALSO
+.BR fc\-list (1),
+.BR pdftotext (1)
+.PP
+Full documentation:
+.UR https://github.com/nerdy\-pro/dxpdf
+.UE
+.SH BUGS
+Report bugs at
+.UR https://github.com/nerdy\-pro/dxpdf/issues
+.UE

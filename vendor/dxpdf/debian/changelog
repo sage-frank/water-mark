@@ -1,0 +1,52 @@
+dxpdf (0.6.0-1) unstable; urgency=medium
+
+  * Added Go bindings (github.com/nerdy-pro/dxpdf/go): a C ABI (`capi`
+    Cargo feature, src/capi.rs) reached via cgo, mirroring the Python
+    package's convert/convert_file API. Not part of this Debian package
+    itself — see go/README.md.
+
+ -- Ilya Nixan <nixan@nerdy.pro>  Sun, 06 Sep 2026 09:00:00 +0000
+
+dxpdf (0.5.1-1) unstable; urgency=medium
+
+  * A repeated XML child no longer fails the document. A writer that emits two
+    <w:jc> in one <w:pPr>, or repeats any other child of pPr, rPr, tblPr, trPr
+    or tcPr, previously aborted the parse with "duplicate field"; every
+    occurrence is now carried through the model and the last one wins, as Word
+    resolves it. The same applies to VML shape children.
+  * Fixed a crash on localized style names: a name whose fourth byte fell
+    inside a multi-byte character (Заголовок 1, Título 1) panicked the table of
+    contents style detection.
+  * §17.16.4.2 date pictures: a backslash now escapes the character after it
+    instead of being printed. DATE \@ "MMM\ d, yyyy" rendered Aug\ 11, 2026 and
+    now renders Aug 11, 2026 (closes #159).
+  * A DATE or TIME field naming no picture takes the short date or time of the
+    document's own w:lang rather than a hardcoded American one, and AM/PM is
+    written the way the locale writes it.
+
+ -- Ilya Nixan <nixan@nerdy.pro>  Wed, 12 Aug 2026 09:00:00 +0000
+
+dxpdf (0.5.0-1) unstable; urgency=medium
+
+  * Internationalisation: UAX #14 line breaking, UAX #9 bidirectional text with
+    rule L4 mirroring, region-aware decimal separators, localized DATE/TIME
+    field pictures, and §17.18.59 number formats spelled out in English,
+    German, French and Spanish.
+  * First release to ship this package. amd64 and arm64, built on Debian 12.
+  * Pagination fixes that move page counts on existing documents: a paragraph
+    is no longer stranded alone before an explicit page break, a paragraph mark
+    is measured in its own font rather than the paragraph default, and the line
+    fitter no longer overruns its container when it breaks back to an earlier
+    opportunity.
+
+ -- Ilya Nixan <nixan@nerdy.pro>  Tue, 11 Aug 2026 09:00:00 +0000
+
+dxpdf (0.4.0-1) unstable; urgency=medium
+
+  * Initial Debian package, built upstream and attached to the GitHub release
+    rather than uploaded to the Debian archive (see issue #92). The archive
+    route needs a Skia that Debian itself packages; there is not one yet.
+  * Per-version upstream changes are in the GitHub release notes:
+    https://github.com/nerdy-pro/dxpdf/releases
+
+ -- Ilya Nixan <nixan@nerdy.pro>  Mon, 10 Aug 2026 19:00:00 +0000

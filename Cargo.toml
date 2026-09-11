@@ -7,12 +7,38 @@ edition = "2024"
 lopdf = "0.33.0"
 ab_glyph = "0.2"
 log = "0.3.9"
+office2pdf = "0.6.8"
+dxpdf = "0.6.0"
+# dxpdf 内部用 log 0.4 打了分阶段耗时（debug 级），需要装一个日志后端才能看到
+env_logger = "0.11"
+zip = { version = "8", default-features = false, features = ["deflate"] }
+# 临时：bench_glyph 基准直接调用 Skia，量化字形 path 生成成本。定位完成后删除。
+skia-safe = { version = "0.99", features = ["embed-freetype", "textlayout"] }
 
 
 [lib]
 name = "water_mark"
 crate-type = ["cdylib", "rlib"] # cdylib 用于 PHP (FFI), rlib 用于 main.rs 调用
 
+# 临时：把 dxpdf 指向本地副本，便于给 paint 阶段加细粒度计时埋点。
+# 定位完成后删除本段即可回到 crates.io 版本。
+[patch.crates-io]
+dxpdf = { path = "vendor/dxpdf" }
+
 [[bin]]
 name = "water_mark_cli"
 path = "src/main.rs"
+
+[[bin]]
+name = "docx2pdf"
+path = "src/docx2pdf.rs"
+
+
+[[bin]]
+name="dxpdf2pdf"
+path="src/dxpdf2pdf.rs"
+
+# 临时：定位 paint 阶段慢点用，定位完成后可删除。
+[[bin]]
+name = "bench_glyph"
+path = "src/bench_glyph.rs"
