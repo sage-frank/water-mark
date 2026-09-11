@@ -2,3 +2,8 @@
 .DS_Store
 .env
 *.pdf
+
+# debug / temporary artifacts
+dbg_*.txt
+tmp_*
+numbering_preview.xml
