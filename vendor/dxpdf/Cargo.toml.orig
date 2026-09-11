@@ -1,0 +1,258 @@
+[package]
+name = "dxpdf"
+version = "0.6.0"
+edition = "2021"
+description = "Fast DOCX-to-PDF converter powered by Skia"
+license = "MIT"
+repository = "https://github.com/nerdy-pro/dxpdf"
+homepage = "https://nerdy.pro"
+documentation = "https://docs.rs/dxpdf"
+readme = "README.md"
+keywords = ["docx", "pdf", "converter", "word", "ooxml"]
+categories = ["command-line-utilities", "text-processing"]
+# `go/` is excluded for a harder reason than the rest: once its
+# `internal/capi/lib/*/libdxpdf.a` are committed (prebuilt per-platform
+# static libraries, tens of MB each), including it would make the published
+# crate tarball hundreds of MB — crates.io's default per-crate limit is far
+# below that. None of `go/` is needed to build or use the Rust crate anyway.
+exclude = ["test-cases/", "test-files/", "scripts/", "output/", "plans/", "go/"]
+
+[lib]
+crate-type = ["rlib", "cdylib", "staticlib"]
+
+# Debian package (issue #92), built by `cargo deb` and attached to each GitHub
+# release by `.github/workflows/deb.yml`. This is an upstream-built `.deb`, not
+# an upload to the Debian archive, and the difference is not a matter of
+# polish: `skia-bindings` ships a 270 KB crate with no Skia in it and clones
+# the C++ tree during its build script — which is why `git` is a build
+# dependency of this package at all. Debian builds on machines with no network
+# and no vendored third-party C++, so the archive route stays closed until
+# somebody packages Skia for Debian. Nothing here changes that; it does mean a
+# Debian user can install the CLI today, and it shortens the job if that route
+# ever opens.
+#
+# `scripts/verify_deb.py` checks the resulting package and `tests/packaging.rs`
+# checks this table; between them, most of what is written below is enforced.
+[package.metadata.deb]
+maintainer = "Ilya Nixan <nixan@nerdy.pro>"
+copyright = "2025-2026 Ilya Nixan <nixan@nerdy.pro>"
+# `[package] license = "MIT"` names the licence; this ships its text, which
+# Policy §12.5 requires in /usr/share/doc/dxpdf/copyright. The 0 is how many
+# leading lines to skip — our LICENSE starts directly with the licence.
+license-file = ["LICENSE", "0"]
+# `text` is where the other document converters live (pandoc, docx2txt).
+section = "text"
+priority = "optional"
+# dpkg-shlibdeps, which reads the built binary's DT_NEEDED entries. It only
+# works on a Debian host, which is why CI builds inside a debian:12 container
+# rather than on the Ubuntu runner: the dependency list has to be computed
+# against the distribution the package claims to support.
+depends = "$auto"
+# Not `depends`: the package works without these, it just renders worse, and a
+# user with their own font set should not be made to take Liberation as well.
+#
+# What they actually buy, measured on a bookworm container with
+# `test-files/sample-docx-files-sample1.docx`: a bare install already has one
+# font family, because `libfontconfig1` pulls `fonts-dejavu-core` in as a hard
+# dependency — so the failure is not blank text, it is *wrong* text. That
+# document's request for Courier New resolved to DejaVu **Sans**, a
+# proportional face standing in for a monospace one. With `fonts-liberation2`
+# present it resolves to Liberation Mono, which is metric-compatible with
+# Courier New, and one of the three unmatched-font warnings goes away.
+# Liberation covers Arial, Times New Roman and Courier New — between them, most
+# of what a .docx asks for. The `|` alternative covers releases carrying only
+# the older package name.
+recommends = "fonts-liberation2 | fonts-liberation, fonts-dejavu-core"
+# Policy §12.7 requires one, and cargo-deb does not synthesise it — without
+# this key there is simply no changelog.Debian.gz in the package. It is
+# committed rather than generated so that `apt changelog dxpdf` says something
+# a human wrote; `tests/packaging.rs` fails if its top entry falls behind
+# `[package] version`, which is what stops it going stale.
+changelog = "debian/changelog"
+# There is deliberately no `description` key here: cargo-deb has none, so the
+# package synopsis is always `[package] description` above. That is why it no
+# longer opens with "A" — lintian's `description-synopsis-starts-with-article`,
+# which cannot be fixed anywhere but there.
+extended-description = """\
+dxpdf converts Word documents in Office Open XML format (.docx) to PDF. \
+Layout is performed by dxpdf itself and rendering by Skia, so no office suite \
+is required and nothing is sent over the network.
+
+Fonts are resolved through fontconfig from those installed on the machine, \
+together with any fonts embedded in the document."""
+# Explicit, because cargo-deb's default asset set also picks up C-ABI dynamic
+# libraries — and this crate is `crate-type = ["rlib", "cdylib", "staticlib"]`,
+# so a release build emits `libdxpdf.so` and `libdxpdf.a` as well as the
+# binary. Those are the bodies of the PyO3 extension module and the Go
+# bindings' cgo target respectively: no soname, no headers, no ABI promise,
+# and nothing that should be in /usr/lib. `verify_deb.py` fails the build if
+# either appears.
+assets = [
+    ["target/release/dxpdf", "usr/bin/", "755"],
+    ["man/dxpdf.1", "usr/share/man/man1/", "644"],
+    ["README.md", "usr/share/doc/dxpdf/README.md", "644"],
+    # Reasons for the lintian tags that cannot be fixed, shipped with the
+    # package so they travel with it. CI suppresses nothing else, so a new tag
+    # fails the build.
+    ["debian/dxpdf.lintian-overrides", "usr/share/lintian/overrides/dxpdf", "644"],
+]
+
+[dependencies]
+bitflags = "2"
+quick-xml = { version = "0.41", features = ["serialize"] }
+serde = { version = "1", features = ["derive"] }
+zip = { version = "8", default-features = false, features = ["deflate"] }
+# 0.93 -> 0.99 is **Skia m145 -> m150**, five upstream milestones, so it was
+# treated as a rendering change rather than a version bump. What that audit
+# found, recorded because the next bump should start from it:
+#
+# * No API break. All 29 files that touch `skia_safe` compiled untouched.
+# * One behaviour change, in shaping: the keycap sequence `1<VS16><U+20E3>`
+#   now comes back as two glyphs (the composed keycap plus a zero-advance
+#   blank) where m145 returned one. Same advance, same rasterized image — see
+#   `render::shape`'s `modifier_and_keycap_sequences_ligate`, whose assertion
+#   moved from glyph count to cell width because of it.
+# * **A pixel-diff is a weak instrument for this dependency**, which is worth
+#   knowing before trusting one: output is vector, so *poppler* rasterizes at
+#   diff time, not Skia. Milestone changes to Skia's rasterizer cannot show up.
+#   0/566 corpus pages differed — true, and not the whole story.
+# * The complementary check is PDF bytes, and they did move: 40 of 42 corpus
+#   documents got **smaller** (none grew), corpus total 26,955,053 ->
+#   26,944,930, -0.038%. Skia's PDF backend emits slightly tighter streams.
+# * No performance regression (hyperfine, 50 runs, 10 warmup, median):
+#   sample-4 189.0 -> 170.7 ms, sample1 56.2 -> 52.9 ms, sample4 424.1 ->
+#   418.6 ms. The binary also shrank 93,536 bytes.
+skia-safe = { version = "0.99", features = ["embed-freetype", "textlayout"] }
+thiserror = "2"
+log = "0.4"
+env_logger = "0.11"
+clap = { version = "4", features = ["derive"] }
+# `abi3-py38` builds against Python's stable ABI (PEP 384), so a single wheel
+# per (os, arch) works on Python 3.8 and every newer release without rebuilding.
+# Without it, maturin emits CPython-version-locked wheels (`cp311`, `cp312`),
+# forcing pip to fall back to source-build sdist on any unmatched Python —
+# which then fails on hosts missing the freetype/fontconfig dev headers.
+pyo3 = { version = "0.29", features = ["extension-module", "abi3-py38"], optional = true }
+fontcull = { version = "2", optional = true }
+# General OpenType libraries (fontations, republished under these names) — not
+# `fontcull` itself, which stays behind `subset-fonts` below. Baking a variable
+# instance's coordinates into embedded PDF bytes (issue #113) has to work
+# whether or not that feature is on, since the wrong-outline bug it fixes isn't
+# a subsetting defect: it's in what byte blob backs the `Typeface` used to
+# draw, which Skia's PDF backend embeds regardless of subsetting. Both are
+# already in the dependency tree today as `fontcull`'s own transitive deps;
+# this only changes which line pulls them in.
+fontcull-skrifa = "0.39"
+fontcull-write-fonts = "0.44"
+fontcull-read-fonts = "0.38"
+fontcull-font-types = "0.10"
+# **Pinned to whatever `fontcull-write-fonts` uses, not to the latest release.**
+# The only thing this crate does with kurbo is build a `BezPath` and hand it to
+# `SimpleGlyph::from_bezpath`, so the two must agree on the *same* `BezPath`
+# type. Bumping this alone to 0.13 compiles kurbo twice and fails with
+# "expected `kurbo::bezpath::BezPath`, found `BezPath`" — measured, not
+# guessed. 0.13 becomes available here when fontcull-write-fonts takes it, and
+# not before.
+kurbo = "0.12"
+unicode-segmentation = "1.13.2"
+unicode-properties = "0.1.4"
+unicode-normalization = "0.1.25"
+# UAX #9 bidirectional text (issue #131). Not ICU4X, and deliberately so: all
+# three carry their Unicode tables in the binary, so unlike every other #124
+# phase this one adds no data marker to `src/i18n/data/icu_data.blob`.
+#
+# That is not the same as free, and an earlier version of this comment claimed
+# it was. The tables land in the extension module instead, which the wheel
+# still carries: measured with `maturin build --release --features python` on
+# the merge commits either side of #131, 12,177,600 -> 12,223,941 bytes,
+# **+46,341 (+0.38%)**. Cheap — a seventh of what #130's segmenter models
+# cost — but not zero. (#132 then added +9,035 bytes with no dependency at all,
+# putting the whole of #124 at 11,688,534 -> 12,232,976, +4.66%.)
+#
+# `unicode-bidi` is Servo's, and already in `Cargo.lock` as a transitive dep of
+# the `lopdf` dev-dependency; naming it here only changes which line pulls it
+# in. Its default features are `std` + `hardcoded-data`, and `hardcoded-data`
+# is the one that matters — without it `BidiInfo::new` does not exist and every
+# caller has to supply its own `BidiDataSource`.
+unicode-bidi = "0.3.18"
+# Rule L4 (mirroring): `unicode-bidi` implements neither L3 nor L4 and says in
+# its own docs that "the engine using this API" must. This is that engine.
+unicode-bidi-mirroring = "0.4"
+# Which runs need shaping to be legible at all, as opposed to merely unkerned:
+# the Unicode Joining_Type property is exactly the set of scripts whose letters
+# change shape by position (Arabic, Syriac, Thaana, N'Ko, Mongolian, Adlam …).
+# Used as the predicate in `render::shape`, so that turning HarfBuzz on for
+# those scripts does not turn it on for Latin — see that module for why the
+# distinction is load-bearing rather than an optimization.
+unicode-joining-type = "1"
+# FxHash: a fast, non-cryptographic hasher for the per-render measurement memo
+# (hot path, short keys). std's SipHash made an earlier width cache net-negative
+# on small docs; FxHash keeps the probe cheap enough to win across the doc mix.
+rustc-hash = "2"
+# ICU4X (issue #124/#127): locale data ships as a committed blob
+# (`src/i18n/data/icu_data.blob`, regenerated by `scripts/make_icu_data.sh`)
+# loaded through `icu_provider_blob`, not through each crate's own default
+# `compiled_data` feature — that feature bakes in every CLDR locale, which is
+# the wheel-size risk #124 names by name. Every `icu_*` leaf crate that ships
+# actual locale data (`icu_decimal`, `icu_datetime`, `icu_segmenter`) must be
+# added with `default-features = false` for the trimmed blob to actually save
+# anything instead of shipping both.
+# `icu_locale_core`/`icu_provider`/`fixed_decimal` carry no `compiled_data`
+# feature to begin with — they're plumbing/type crates, not locale data.
+#
+# Feature spellings differ per crate and are not interchangeable: `icu_decimal`
+# and `icu_calendar` each have their own `alloc` feature, `icu_datetime` and
+# `icu_segmenter` have none at all (their deps hard-wire `alloc` themselves, so
+# naming it here is an unknown-feature error). Both date crates also default to
+# `ixdtf` (IXDTF string parsing), which nothing here uses —
+# `default-features = false` drops it along with `compiled_data`.
+icu_locale_core = "2.2.0"
+icu_provider = "2.2.0"
+fixed_decimal = "0.7.2"
+icu_provider_blob = { version = "2.2.0", default-features = false, features = ["alloc"] }
+icu_decimal = { version = "2.2.0", default-features = false, features = ["alloc", "serde"] }
+# §17.16.4.2 date-picture month/weekday names (issue #129). `icu_calendar` is
+# not only `icu_datetime`'s input type: `src/field/now.rs` uses its `RataDie`
+# arithmetic to turn a Unix timestamp into a Gregorian date rather than
+# hand-rolling leap-year math.
+icu_calendar = { version = "2.2.1", default-features = false, features = ["alloc", "serde"] }
+icu_datetime = { version = "2.2.0", default-features = false, features = ["serde"] }
+writeable = "0.6.3"
+# UAX #14 line breaking (issue #130). `auto` is the feature that turns on the
+# LSTM models for the four scripts UAX #14 leaves to "complex context analysis"
+# (class SA — Thai, Lao, Khmer, Burmese); without it those scripts get no word
+# boundaries at all and break mid-word. CJK needs no model — UAX #14's own
+# rules handle class ID — so this is the whole of the complex-script cost.
+icu_segmenter = { version = "2.2.0", default-features = false, features = ["auto", "serde"] }
+
+[features]
+default = ["subset-fonts"]
+python = ["pyo3"]
+# The Go bindings' C ABI (`src/capi.rs`), consumed via cgo against the
+# `staticlib` artifact above. No dependency of its own — unlike `python`,
+# nothing beyond `std` is needed to expose `extern "C"` functions.
+capi = []
+# `fontcull` (Google's klippa packaged for Rust) produces a *complete* subsetted
+# SFNT — cmap, hhea, OS/2 preserved — so Skia can shape against it normally
+# during paint. The earlier `subsetter` (Typst) crate strips cmap by design,
+# which broke Skia's draw_str path: every codepoint mapped to .notdef.
+subset-fonts = ["dep:fontcull"]
+
+[dev-dependencies]
+tempfile = "3"
+criterion = { version = "0.8", features = ["html_reports"] }
+lopdf = { version = "0.44", default-features = false }
+# Reads `[package.metadata.deb]` back out of this file in `tests/packaging.rs`,
+# so a renamed asset fails at `cargo test` time instead of during a release
+# build. Already in `Cargo.lock` as a transitive dependency, so naming it here
+# only changes which line pulls it in — and being dev-only it reaches neither
+# the crate, the wheel, nor the `.deb`.
+toml = "1"
+
+[[bench]]
+name = "convert_bench"
+harness = false
+
+[[bench]]
+name = "parse_bench"
+harness = false

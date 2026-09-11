@@ -1,0 +1,606 @@
+//! Integration tests that parse real DOCX files from the test-files directory
+//! and validate the resulting Document structure.
+
+use dxpdf::model::*;
+
+const TEST_DIR: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/test-files");
+
+fn load(name: &str) -> Document {
+    let path = format!("{TEST_DIR}/{name}");
+    let data = std::fs::read(&path).unwrap_or_else(|e| panic!("failed to read {path}: {e}"));
+    dxpdf::docx::parse(&data).unwrap_or_else(|e| panic!("failed to parse {path}: {e}"))
+}
+
+// ── Helpers ──────────────────────────────────────────────────────────────────
+
+fn count_paragraphs(blocks: &[Block]) -> usize {
+    blocks
+        .iter()
+        .map(|b| match b {
+            Block::Paragraph(_) => 1,
+            Block::Table(t) => t
+                .rows
+                .iter()
+                .flat_map(|r| &r.cells)
+                .map(|c| count_paragraphs(&c.content))
+                .sum(),
+            Block::SectionBreak(_) => 0,
+        })
+        .sum()
+}
+
+fn count_tables(blocks: &[Block]) -> usize {
+    blocks
+        .iter()
+        .map(|b| match b {
+            Block::Table(t) => {
+                1 + t
+                    .rows
+                    .iter()
+                    .flat_map(|r| &r.cells)
+                    .map(|c| count_tables(&c.content))
+                    .sum::<usize>()
+            }
+            _ => 0,
+        })
+        .sum()
+}
+
+fn count_images(blocks: &[Block]) -> usize {
+    blocks
+        .iter()
+        .map(|b| match b {
+            Block::Paragraph(p) => count_images_inline(&p.content),
+            Block::Table(t) => t
+                .rows
+                .iter()
+                .flat_map(|r| &r.cells)
+                .map(|c| count_images(&c.content))
+                .sum(),
+            Block::SectionBreak(_) => 0,
+        })
+        .sum()
+}
+
+fn count_images_inline(inlines: &[Inline]) -> usize {
+    inlines
+        .iter()
+        .map(|i| match i {
+            Inline::Image(_) => 1,
+            Inline::Hyperlink(h) => count_images_inline(&h.content),
+            _ => 0,
+        })
+        .sum()
+}
+
+fn count_hyperlinks(blocks: &[Block]) -> usize {
+    blocks
+        .iter()
+        .map(|b| match b {
+            Block::Paragraph(p) => p
+                .content
+                .iter()
+                .filter(|i| matches!(i, Inline::Hyperlink(_)))
+                .count(),
+            Block::Table(t) => t
+                .rows
+                .iter()
+                .flat_map(|r| &r.cells)
+                .map(|c| count_hyperlinks(&c.content))
+                .sum(),
+            Block::SectionBreak(_) => 0,
+        })
+        .sum()
+}
+
+fn collect_text(blocks: &[Block]) -> String {
+    let mut out = String::new();
+    for block in blocks {
+        match block {
+            Block::Paragraph(p) => {
+                for inline in &p.content {
+                    if let Inline::TextRun(run) = inline {
+                        for elem in &run.content {
+                            if let RunElement::Text(t) = elem {
+                                out.push_str(t);
+                            }
+                        }
+                    }
+                }
+                out.push('\n');
+            }
+            Block::Table(t) => {
+                for row in &t.rows {
+                    for cell in &row.cells {
+                        out.push_str(&collect_text(&cell.content));
+                    }
+                }
+            }
+            Block::SectionBreak(_) => {}
+        }
+    }
+    out
+}
+
+// ── sample1: richest file (tables, images, hyperlinks, numbering, footnotes) ─
+
+#[test]
+fn sample1_parses() {
+    let doc = load("sample-docx-files-sample1.docx");
+    assert!(!doc.body.is_empty());
+}
+
+#[test]
+fn sample1_tables() {
+    let doc = load("sample-docx-files-sample1.docx");
+    let n = count_tables(&doc.body);
+    assert!(n >= 6, "expected at least 6 tables, got {n}");
+}
+
+#[test]
+fn sample1_images() {
+    let doc = load("sample-docx-files-sample1.docx");
+    assert!(
+        doc.media.len() >= 3,
+        "expected at least 3 media entries, got {}",
+        doc.media.len()
+    );
+    let n = count_images(&doc.body);
+    assert!(n >= 3, "expected at least 3 images in body, got {n}");
+}
+
+#[test]
+fn sample1_hyperlinks() {
+    let doc = load("sample-docx-files-sample1.docx");
+    let n = count_hyperlinks(&doc.body);
+    assert!(n >= 10, "expected at least 10 hyperlinks, got {n}");
+}
+
+#[test]
+fn sample1_footnotes_endnotes() {
+    let doc = load("sample-docx-files-sample1.docx");
+    let _ = doc.footnotes.len() + doc.endnotes.len();
+}
+
+#[test]
+fn sample1_numbering() {
+    let doc = load("sample-docx-files-sample1.docx");
+    let has_numbering = doc
+        .body
+        .iter()
+        .any(|b| matches!(b, Block::Paragraph(p) if p.properties.numbering.get().is_some()));
+    assert!(has_numbering, "expected at least one numbered paragraph");
+}
+
+#[test]
+fn sample1_theme() {
+    let doc = load("sample-docx-files-sample1.docx");
+    let theme = doc.theme.as_ref().expect("expected theme");
+    assert!(
+        !theme.minor_font.latin.is_empty(),
+        "theme should have minor latin font"
+    );
+}
+
+#[test]
+fn sample1_has_direct_formatting() {
+    let doc = load("sample-docx-files-sample1.docx");
+    let mut sizes = std::collections::HashSet::new();
+    for block in &doc.body {
+        if let Block::Paragraph(p) = block {
+            for inline in &p.content {
+                if let Inline::TextRun(run) = inline {
+                    if let Some(sz) = run.properties.font_size.cloned() {
+                        sizes.insert(sz.raw());
+                    }
+                }
+            }
+        }
+    }
+    assert!(
+        !sizes.is_empty(),
+        "expected some runs to have explicit font sizes"
+    );
+}
+
+// ── sample2: minimal file (5 paragraphs, 1 image) ───────────────────────────
+
+#[test]
+fn sample2_parses() {
+    let doc = load("sample-docx-files-sample2.docx");
+    assert!(!doc.body.is_empty());
+}
+
+#[test]
+fn sample2_small_body() {
+    let doc = load("sample-docx-files-sample2.docx");
+    let n = count_paragraphs(&doc.body);
+    assert!(n >= 3, "expected at least 3 paragraphs, got {n}");
+    assert_eq!(count_tables(&doc.body), 0, "expected no tables");
+}
+
+#[test]
+fn sample2_single_image() {
+    let doc = load("sample-docx-files-sample2.docx");
+    assert_eq!(doc.media.len(), 1, "expected 1 media entry");
+    let n = count_images(&doc.body);
+    assert_eq!(n, 1, "expected 1 image in body");
+}
+
+// ── sample3: tables + hyperlinks + numbering ─────────────────────────────────
+
+#[test]
+fn sample3_parses() {
+    let doc = load("sample-docx-files-sample3.docx");
+    assert!(!doc.body.is_empty());
+}
+
+#[test]
+fn sample3_tables() {
+    let doc = load("sample-docx-files-sample3.docx");
+    let n = count_tables(&doc.body);
+    assert!(n >= 2, "expected at least 2 tables, got {n}");
+}
+
+#[test]
+fn sample3_images() {
+    let doc = load("sample-docx-files-sample3.docx");
+    assert_eq!(doc.media.len(), 2, "expected 2 media entries");
+}
+
+#[test]
+fn sample3_hyperlinks() {
+    let doc = load("sample-docx-files-sample3.docx");
+    let n = count_hyperlinks(&doc.body);
+    assert!(n >= 3, "expected at least 3 hyperlinks, got {n}");
+}
+
+#[test]
+fn sample3_numbering() {
+    let doc = load("sample-docx-files-sample3.docx");
+    let has_numbering = doc
+        .body
+        .iter()
+        .any(|b| matches!(b, Block::Paragraph(p) if p.properties.numbering.get().is_some()));
+    assert!(has_numbering, "expected numbered paragraphs");
+}
+
+// ── sample-4: text-only with header ──────────────────────────────────────────
+
+#[test]
+fn sample_4_parses() {
+    let doc = load("sample-docx-files-sample-4.docx");
+    assert!(!doc.body.is_empty());
+}
+
+#[test]
+fn sample_4_has_header() {
+    let doc = load("sample-docx-files-sample-4.docx");
+    assert!(
+        !doc.headers.is_empty(),
+        "expected at least one header, got none"
+    );
+}
+
+#[test]
+fn sample_4_no_images_or_tables() {
+    let doc = load("sample-docx-files-sample-4.docx");
+    assert_eq!(count_tables(&doc.body), 0);
+    assert_eq!(count_images(&doc.body), 0);
+    assert!(doc.media.is_empty());
+}
+
+#[test]
+fn sample_4_paragraph_count() {
+    let doc = load("sample-docx-files-sample-4.docx");
+    let n = count_paragraphs(&doc.body);
+    assert!(n >= 50, "expected at least 50 paragraphs, got {n}");
+}
+
+// ── sample-5: large text-only document ───────────────────────────────────────
+
+#[test]
+fn sample_5_parses() {
+    let doc = load("sample-docx-files-sample-5.docx");
+    assert!(!doc.body.is_empty());
+}
+
+#[test]
+fn sample_5_many_paragraphs() {
+    let doc = load("sample-docx-files-sample-5.docx");
+    let n = count_paragraphs(&doc.body);
+    assert!(n >= 500, "expected at least 500 paragraphs, got {n}");
+}
+
+#[test]
+fn sample_5_text_only() {
+    let doc = load("sample-docx-files-sample-5.docx");
+    assert_eq!(count_tables(&doc.body), 0);
+    assert_eq!(count_images(&doc.body), 0);
+    assert!(doc.media.is_empty());
+    assert!(doc.headers.is_empty());
+    assert!(doc.footers.is_empty());
+}
+
+// ── sample-6: very large text-only document ──────────────────────────────────
+
+#[test]
+fn sample_6_parses() {
+    let doc = load("sample-docx-files-sample-6.docx");
+    assert!(!doc.body.is_empty());
+}
+
+#[test]
+fn sample_6_many_paragraphs() {
+    let doc = load("sample-docx-files-sample-6.docx");
+    let n = count_paragraphs(&doc.body);
+    assert!(n >= 2000, "expected at least 2000 paragraphs, got {n}");
+}
+
+// ── sample4: image-heavy (47 images) ─────────────────────────────────────────
+
+#[test]
+fn sample4_parses() {
+    let doc = load("sample-docx-files-sample4.docx");
+    assert!(!doc.body.is_empty());
+}
+
+#[test]
+fn sample4_many_images() {
+    let doc = load("sample-docx-files-sample4.docx");
+    assert!(
+        doc.media.len() >= 40,
+        "expected at least 40 media entries, got {}",
+        doc.media.len()
+    );
+}
+
+#[test]
+fn sample4_image_extents() {
+    let doc = load("sample-docx-files-sample4.docx");
+    let n = count_images(&doc.body);
+    assert!(n >= 30, "expected at least 30 images in body, got {n}");
+
+    // All images should have non-zero extents
+    fn check(blocks: &[Block]) {
+        for block in blocks {
+            match block {
+                Block::Paragraph(p) => {
+                    for inline in &p.content {
+                        if let Inline::Image(img) = inline {
+                            assert!(
+                                img.extent.width.raw() > 0 && img.extent.height.raw() > 0,
+                                "image should have non-zero extent"
+                            );
+                        }
+                    }
+                }
+                Block::Table(t) => {
+                    for row in &t.rows {
+                        for cell in &row.cells {
+                            check(&cell.content);
+                        }
+                    }
+                }
+                Block::SectionBreak(_) => {}
+            }
+        }
+    }
+    check(&doc.body);
+}
+
+// ── Cross-cutting tests ──────────────────────────────────────────────────────
+
+const ALL_FILES: &[&str] = &[
+    "document_outline.docx",
+    "sample-docx-files-sample1.docx",
+    "sample-docx-files-sample2.docx",
+    "sample-docx-files-sample3.docx",
+    "sample-docx-files-sample4.docx",
+    "sample-docx-files-sample-4.docx",
+    "sample-docx-files-sample-5.docx",
+    "sample-docx-files-sample-6.docx",
+    "comment-reference.docx",
+    "russian-numbering.docx",
+    "numbering-direct-indent.docx",
+    "centered-numbered-heading.docx",
+    "issue-159-minimal.docx",
+    "issue-139-minimal.docx",
+    "issue-165-vmerge.docx",
+    "issue-165-cellspacing.docx",
+    "issue-165-cellspacing-scale.docx",
+    "issue-165-floatv.docx",
+    "hidden-text.docx",
+    "grid-gap-borders.docx",
+    // The three §17.4.66 geometry probes. They assert nothing about
+    // borders — see `scripts/make_border_geometry_probes.py` — but they are
+    // ordinary packages and belong in the parse sweep like any other.
+    "border-content-charge.docx",
+    "border-outer-box.docx",
+    "border-junction-colour.docx",
+    // §17.4.66 across a row of no height. It joins the sweep now that it can:
+    // it asked its question with a cell-less `<w:tr/>` until Word turned out to
+    // refuse such a document outright, and `table_rows_have_cells` below is the
+    // invariant that shape violated. The two spellings Word does accept — a row
+    // of `hRule="exact"` at 0 and at 2pt — both carry a cell.
+    "issue-157-empty-row-edge.docx",
+];
+
+#[test]
+fn all_files_parse_without_error() {
+    for name in ALL_FILES {
+        let _ = load(name);
+    }
+}
+
+#[test]
+fn all_files_have_body_text() {
+    for name in ALL_FILES {
+        let doc = load(name);
+        let text = collect_text(&doc.body);
+        assert!(
+            !text.trim().is_empty(),
+            "{name}: document should contain text"
+        );
+    }
+}
+
+#[test]
+fn all_files_have_page_size() {
+    for name in ALL_FILES {
+        let doc = load(name);
+        assert!(
+            doc.final_section.page_size.get().is_some(),
+            "{name}: final section should have page size"
+        );
+    }
+}
+
+#[test]
+fn all_files_have_margins() {
+    for name in ALL_FILES {
+        let doc = load(name);
+        assert!(
+            doc.final_section.page_margins.get().is_some(),
+            "{name}: final section should have page margins"
+        );
+    }
+}
+
+#[test]
+fn all_files_have_default_tab_stop() {
+    for name in ALL_FILES {
+        let doc = load(name);
+        let tab = doc.settings.default_tab_stop.raw();
+        assert!(tab > 0, "{name}: expected non-zero default tab stop");
+    }
+}
+
+#[test]
+fn table_rows_have_cells() {
+    for name in ALL_FILES {
+        let doc = load(name);
+        fn check(blocks: &[Block], name: &str) {
+            for block in blocks {
+                if let Block::Table(t) = block {
+                    for (i, row) in t.rows.iter().enumerate() {
+                        assert!(!row.cells.is_empty(), "{name}: table row {i} has no cells");
+                        for cell in &row.cells {
+                            check(&cell.content, name);
+                        }
+                    }
+                }
+            }
+        }
+        check(&doc.body, name);
+    }
+}
+
+#[test]
+fn table_cells_have_content() {
+    for name in ALL_FILES {
+        let doc = load(name);
+        fn count_empty(blocks: &[Block]) -> (usize, usize) {
+            let mut total = 0usize;
+            let mut empty = 0usize;
+            for block in blocks {
+                if let Block::Table(t) = block {
+                    for row in &t.rows {
+                        for cell in &row.cells {
+                            total += 1;
+                            if cell.content.is_empty() {
+                                empty += 1;
+                            }
+                            let (t2, e2) = count_empty(&cell.content);
+                            total += t2;
+                            empty += e2;
+                        }
+                    }
+                }
+            }
+            (total, empty)
+        }
+        let (total, empty) = count_empty(&doc.body);
+        if total > 0 {
+            assert!(
+                empty <= total / 2,
+                "{name}: too many empty cells ({empty}/{total})"
+            );
+        }
+    }
+}
+
+/// §17.3.1.19: the outline-level fixture from issue #90 declares `w:outlineLvl`
+/// on its heading *styles*, not on the paragraphs, so the level only exists
+/// after the §17.7.2 cascade. This pins the parse half — that the styles carry
+/// it at all — because a fixture that silently stopped declaring it would make
+/// every outline test pass for the wrong reason.
+#[test]
+fn the_outline_fixture_declares_heading_levels_on_its_styles() {
+    let doc = load("document_outline.docx");
+
+    let level_of = |style_id: &str| {
+        doc.styles
+            .styles
+            .get(&StyleId::new(style_id))
+            .unwrap_or_else(|| panic!("{style_id} is defined"))
+            .paragraph_properties
+            .as_ref()
+            .and_then(|p| p.outline_level.cloned())
+    };
+
+    assert_eq!(level_of("Heading1"), OutlineLevel::from_ooxml(0));
+    assert_eq!(level_of("Heading2"), OutlineLevel::from_ooxml(1));
+    assert_eq!(level_of("Normal"), None, "body text has no outline level");
+}
+
+/// The six headings the reference PDF's outline has, in document order. Their
+/// paragraphs carry no `w:outlineLvl` of their own — only `w:pStyle`.
+#[test]
+fn the_outline_fixture_has_six_heading_paragraphs() {
+    let doc = load("document_outline.docx");
+
+    let styles: Vec<String> = doc
+        .body
+        .iter()
+        .filter_map(|b| match b {
+            Block::Paragraph(p) => p.style_id.as_ref().map(|s| s.as_str().to_string()),
+            _ => None,
+        })
+        .filter(|s| s.starts_with("Heading"))
+        .collect();
+
+    assert_eq!(
+        styles,
+        ["Heading1", "Heading1", "Heading2", "Heading1", "Heading1", "Heading2"],
+    );
+}
+
+#[test]
+fn media_bytes_are_nonempty() {
+    for name in ALL_FILES {
+        let doc = load(name);
+        for (rel_id, (data, _fmt)) in &doc.media {
+            assert!(!data.is_empty(), "{name}: media {rel_id:?} has empty bytes");
+        }
+    }
+}
+
+#[test]
+fn comment_reference_run_parses_and_keeps_text() {
+    // `<w:commentReference>` inside a run must not fail the parse; the
+    // commented text survives while the comment anchor itself is dropped.
+    let doc = load("comment-reference.docx");
+    assert!(!collect_text(&doc.body).trim().is_empty());
+}
+
+#[test]
+fn russian_number_formats_parse() {
+    let doc = load("russian-numbering.docx");
+    let has_russian_upper = doc.numbering.abstract_nums.values().any(|a| {
+        a.levels
+            .iter()
+            .any(|l| l.format == Some(NumberFormat::RussianUpper))
+    });
+    assert!(has_russian_upper, "expected a russianUpper numbering level");
+}

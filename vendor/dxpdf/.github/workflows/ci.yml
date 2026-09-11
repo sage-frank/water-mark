@@ -1,0 +1,365 @@
+name: CI
+
+on:
+  pull_request:
+    branches: [main]
+  push:
+    branches: [main]
+
+env:
+  CARGO_TERM_COLOR: always
+  RUST_BACKTRACE: 1
+
+jobs:
+  check:
+    name: Check & Lint
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy, rustfmt
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Install system dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libfontconfig1-dev libfreetype-dev
+
+      - name: Check formatting
+        run: cargo fmt --all -- --check
+
+      - name: Clippy
+        run: cargo clippy --all-targets -- -D warnings
+
+      # Rustdoc warnings are silent locally unless you happen to run
+      # `cargo doc`, so broken intra-doc links accumulated unnoticed until a
+      # review counted 11 of them. `-D warnings` catches dangling `[`links`]`,
+      # links from public docs to private items, and prose that rustdoc parses
+      # as HTML (`Vec<Thing>` outside backticks).
+      - name: Doc links
+        run: cargo doc --no-deps
+        env:
+          RUSTDOCFLAGS: -D warnings
+
+  test:
+    name: Test (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Install system dependencies (Linux)
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libfontconfig1-dev libfreetype-dev
+
+      # `--no-fail-fast`: without it, cargo stops at the first test *target*
+      # (lib, one integration binary, ...) that has a failure and never runs
+      # the rest — issue #117's first windows-latest run hit exactly this,
+      # stopping after the lib tests and never reaching `font_resolution.rs`.
+      # A platform-specific run should surface every finding in one pass.
+      - name: Run tests
+        run: cargo test --all --no-fail-fast
+
+      # `subset-fonts` is default-on, so `cargo test --all` never compiles the
+      # crate without it. AGENTS.md documents `--no-default-features` as a
+      # supported build; nothing verified it, which is how a `not(feature)`
+      # arm survived in a module that only exists *with* the feature. This
+      # catches the real failure mode: a `fontcull` reference leaking outside
+      # the gated module.
+      - name: Build without default features
+        run: cargo build --no-default-features
+
+  # Cheap, Linux-only check of the Go bindings' C ABI (`capi` feature,
+  # `src/capi.rs`) and of the committed `go/internal/capi/lib/linux_amd64/
+  # libdxpdf.a` itself — `go test` links against exactly the file checked
+  # into the repo (no staging step: it's already there after checkout),
+  # which is the one functional proof that a committed library still works,
+  # on every PR. `tests/capi_lib_freshness.rs`, run as part of the `test`
+  # job's `cargo test --all` on every platform, is what catches the other
+  # three platforms' libraries going stale without a way to execute them
+  # here. macOS/Windows *linking* is not covered here; see AGENTS.md's
+  # Go-bindings note for why.
+  go-bindings:
+    name: Go bindings (capi)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.22"
+
+      - name: Install system dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libfontconfig1-dev libfreetype-dev
+
+      - name: Build the capi staticlib (compile check)
+        run: cargo build --release --features capi
+
+      - name: Install cbindgen
+        run: cargo install cbindgen --locked
+
+      - name: Check the committed C header is up to date
+        run: cargo test --test capi_header
+
+      - name: go vet
+        working-directory: go
+        run: go vet ./...
+
+      - name: go test (against the committed libdxpdf.a)
+        working-directory: go
+        run: go test ./... -race
+
+  build:
+    name: Build release
+    runs-on: ubuntu-latest
+    needs: [check, test]
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Install system dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libfontconfig1-dev libfreetype-dev
+
+      - name: Build release binary
+        run: cargo build --release
+
+      - name: Print binary size
+        run: ls -lh target/release/dxpdf
+
+  # Mirrors the build matrix in `python.yml` to validate every wheel target
+  # is buildable on every PR — not only at release time. Keep the matrix in
+  # sync with `python.yml`; a divergence between the two means the publish
+  # workflow can fail on a target that CI does not exercise.
+  build-wheels:
+    name: Build wheel (${{ matrix.target.label }})
+    runs-on: ${{ matrix.target.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        target:
+          - label: linux-x86_64
+            os: linux
+            runner: ubuntu-latest
+            triple: x86_64-unknown-linux-gnu
+          - label: linux-aarch64
+            os: linux
+            runner: ubuntu-24.04-arm
+            triple: aarch64-unknown-linux-gnu
+          - label: macos-arm64
+            os: macos
+            runner: macos-latest
+            triple: aarch64-apple-darwin
+          - label: macos-x86_64
+            os: macos
+            runner: macos-15-intel
+            triple: x86_64-apple-darwin
+          - label: windows-x86_64
+            os: windows
+            runner: windows-latest
+            triple: x86_64-pc-windows-msvc
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Build wheel (linux)
+        if: matrix.target.os == 'linux'
+        uses: PyO3/maturin-action@v1
+        env:
+          # skia-bindings only supports clang on Linux: it unconditionally
+          # injects clang-only `--target=<triple>` into Skia's GN cflags.
+          # AlmaLinux 8's default libstdc++ (GCC 8) lacks C++20 <compare>,
+          # so point clang at gcc-toolset-13's libstdc++ via --gcc-toolchain.
+          # Skia's GN build does NOT propagate CFLAGS/CXXFLAGS — we have to
+          # inject the toolchain flag through SKIA_GN_ARGS (`+=` to preserve
+          # skia-bindings' own extra_cflags like `-O3` and `--target=...`).
+          CC: clang
+          CXX: clang++
+          CFLAGS: --gcc-toolchain=/opt/rh/gcc-toolset-13/root/usr
+          CXXFLAGS: --gcc-toolchain=/opt/rh/gcc-toolset-13/root/usr
+          BINDGEN_EXTRA_CLANG_ARGS: --gcc-toolchain=/opt/rh/gcc-toolset-13/root/usr
+          # `+=` requires the variable to already exist in the GN scope.
+          # `extra_cflags` is auto-set by skia-bindings (so `+=` extends it);
+          # `extra_ldflags` is not, so we'd get "Undefined identifier" on `+=`.
+          # The Skia build only emits static archives (no link step), so we
+          # don't need extra_ldflags here — the cdylib link is rustc's job.
+          SKIA_GN_ARGS: 'extra_cflags+=["--gcc-toolchain=/opt/rh/gcc-toolset-13/root/usr"]'
+        with:
+          args: --release --out dist --features python
+          manylinux: 2_28
+          before-script-linux: dnf install -y fontconfig-devel clang ninja-build gcc-toolset-13
+          target: ${{ matrix.target.triple }}
+          # maturin-action filters env vars by prefix (CC/CXX/CFLAGS pass; SKIA_*
+          # and BINDGEN_* don't). Forward the two we set above explicitly.
+          docker-options: -e SKIA_GN_ARGS -e BINDGEN_EXTRA_CLANG_ARGS
+
+      - name: Build wheel (macos)
+        if: matrix.target.os == 'macos'
+        uses: PyO3/maturin-action@v1
+        with:
+          args: --release --out dist --features python
+          target: ${{ matrix.target.triple }}
+
+      - name: Build wheel (windows)
+        if: matrix.target.os == 'windows'
+        uses: PyO3/maturin-action@v1
+        with:
+          args: --release --out dist --features python
+          target: ${{ matrix.target.triple }}
+
+      - name: Verify FreeType is embedded (linux/macos)
+        if: matrix.target.os != 'windows'
+        shell: bash
+        run: python3 scripts/verify_wheel.py dist/*.whl
+
+  # The Debian package (issue #92). Built inside a debian:12 container rather
+  # than on the Ubuntu runner, for two reasons that both bite:
+  #
+  #   * `depends = "$auto"` runs dpkg-shlibdeps, which resolves the binary's
+  #     DT_NEEDED entries against the packages of whatever distribution it runs
+  #     on. Run on Ubuntu, it produces Ubuntu's answer.
+  #   * glibc is a floor, not a ceiling. Built on ubuntu-latest the package
+  #     requires glibc 2.39 and will not install on Debian 12 at all — which is
+  #     the audience the request came from. Bookworm's 2.36 covers Debian 12
+  #     and 13, Ubuntu 24.04+, and their derivatives.
+  #
+  # amd64 only here: the release matrix in `deb.yml` builds both architectures,
+  # and each one is a full Skia build. Keep the apt list, the clang version and
+  # the cargo-deb invocation in sync with that workflow — this job exists to
+  # catch a packaging break on the PR that causes it, so a divergence means it
+  # is validating something other than what gets published.
+  build-deb:
+    name: Build Debian package (amd64)
+    runs-on: ubuntu-latest
+    needs: [check, test]
+    container: debian:12-slim
+    steps:
+      # Ahead of checkout, so the action finds git and makes a real clone
+      # instead of falling back to a source tarball.
+      #
+      # clang-19, not bookworm's default clang 14: Skia m150 uses C++20
+      # <ranges>, which clang 14 cannot compile against GCC 12's libstdc++ — it
+      # fails in SkPDFTag.cpp with "no matching function for call to object of
+      # type 'const std::ranges::views::_Reverse'". clang-19 is in bookworm
+      # main, so this needs no backports.
+      - name: Install build dependencies
+        run: |
+          apt-get update
+          apt-get install -y --no-install-recommends \
+            build-essential clang-19 libclang-19-dev ninja-build python3 \
+            curl ca-certificates git pkg-config \
+            libfontconfig1-dev libfreetype-dev lintian
+
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+
+      # Built from source rather than fetched by a third-party installer
+      # action: it is a couple of minutes against a Skia build that dominates
+      # this job anyway, and it keeps the release path free of an extra
+      # dependency.
+      - name: Install cargo-deb
+        run: cargo install cargo-deb --locked
+
+      - name: Build package
+        run: cargo deb
+        env:
+          CC: clang-19
+          CXX: clang++-19
+
+      - name: Verify package contents
+        run: python3 scripts/verify_deb.py target/debian/*.deb
+
+      # No `--suppress-tags`: the only tags that are allowed to fire are the
+      # ones the package explains for itself in
+      # debian/dxpdf.lintian-overrides, which it ships to
+      # /usr/share/lintian/overrides/dxpdf. A new error or warning fails here.
+      - name: Lint package
+        run: lintian --fail-on error,warning --tag-display-limit 0 target/debian/*.deb
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: deb-amd64
+          path: target/debian/*.deb
+
+  # The acceptance test, and the reason it is a separate job: this container
+  # has no toolchain and no -dev packages, so it is the first machine in the
+  # pipeline that can prove the dependency list is complete. Running it in
+  # build-deb would prove nothing — everything the binary needs is already
+  # there because it was just used to compile it.
+  test-deb-install:
+    name: Install Debian package
+    runs-on: ubuntu-latest
+    needs: build-deb
+    container: debian:12-slim
+    steps:
+      - name: Install test prerequisites
+        run: |
+          apt-get update
+          apt-get install -y --no-install-recommends \
+            ca-certificates git poppler-utils man-db groff-base
+
+      - uses: actions/checkout@v4
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: deb-amd64
+          path: pkg
+
+      # Debian's own container images carry
+      # /etc/dpkg/dpkg.cfg.d/docker, which sets `path-exclude
+      # /usr/share/man/*` to keep the image small. Leaving it in place would
+      # make dpkg silently drop the man page on install and this job would
+      # "prove" the package has none. No real Debian system has that file.
+      - name: Install the package the way a user would
+        run: |
+          rm -f /etc/dpkg/dpkg.cfg.d/docker
+          apt-get install -y ./pkg/*.deb
+
+      - name: Recommends were honoured
+        run: dpkg-query -W -f='${Package} ${Status}\n' fonts-liberation2
+
+      - name: The installed program answers for itself
+        run: |
+          dxpdf --version
+          dxpdf --help > /dev/null
+          test -s /usr/share/doc/dxpdf/copyright
+          test -s /usr/share/doc/dxpdf/changelog.Debian.gz
+          man --warnings -E UTF-8 -l /usr/share/man/man1/dxpdf.1.gz > /dev/null
+
+      # Conversion, not just startup: a package that installs and then cannot
+      # render is the failure mode a dependency list gets wrong.
+      - name: Convert a document
+        run: |
+          dxpdf test-files/sample-docx-files-sample1.docx -o /tmp/out.pdf
+          head -c 5 /tmp/out.pdf | grep -q '%PDF-'
+          chars=$(pdftotext /tmp/out.pdf - | tr -d '[:space:]' | wc -c)
+          echo "extracted $chars characters of text"
+          test "$chars" -gt 1000
