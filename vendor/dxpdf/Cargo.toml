@@ -405,8 +405,11 @@ features = ["derive"]
 
 [dependencies.skia-safe]
 version = "0.99"
+# 注意：不要加 "embed-freetype"。该特性会把产物名变成 ...-ftembed-...，
+# 而 rust-skia 的 skia-binaries 0.99.0 里没有任何 ftembed 产物（404），
+# 会回退到源码全量构建，而源码构建需 clone chromium/skia.googlesource.com（国内不可达）。
+# Linux 上使用系统 freetype（默认行为）即可。
 features = [
-    "embed-freetype",
     "textlayout",
 ]
 

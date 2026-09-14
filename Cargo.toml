@@ -9,11 +9,21 @@ ab_glyph = "0.2"
 log = "0.3.9"
 office2pdf = "0.6.8"
 dxpdf = "0.6.0"
+# 方案验证用：纯 Rust 的 LibreOffice 兼容实现（DOCX→PDF 走 docx_to_pdf_bytes）
+libreoffice-pure = "0.5.8"
 # dxpdf 内部用 log 0.4 打了分阶段耗时（debug 级），需要装一个日志后端才能看到
 env_logger = "0.11"
 zip = { version = "8", default-features = false, features = ["deflate"] }
 # 临时：bench_glyph 基准直接调用 Skia，量化字形 path 生成成本。定位完成后删除。
-skia-safe = { version = "0.99", features = ["embed-freetype", "textlayout"] }
+# 不要加 "embed-freetype"：它会让产物名带 ftembed，而 0.99.0 没有该产物（404）→
+# 回退源码构建 → 需要 clone chromium/skia.googlesource.com → 国内必失败。
+skia-safe = { version = "0.99", features = ["textlayout"] }
+# docx→pdf 转换服务（bin: convertd）用：HTTP 服务端
+axum = { version = "0.8.9", features = ["multipart"] }
+tokio = { version = "1.53.1", features = ["rt-multi-thread", "macros", "net", "signal", "time", "sync", "fs"] }
+# 仅访问本机 unoserver 的明文 HTTP，故关闭默认特性（已确认 0.13 无 http1 开关，
+# HTTP/1.1 常开；关掉默认特性只是去掉 TLS/charset 等我们不用的东西）。
+reqwest = { version = "0.13.5", default-features = false }
 
 
 [lib]
@@ -37,6 +47,21 @@ path = "src/docx2pdf.rs"
 [[bin]]
 name="dxpdf2pdf"
 path="src/dxpdf2pdf.rs"
+
+# 方案验证 A：libreoffice-pure（纯 Rust 实现，进程内转换）
+[[bin]]
+name = "lopure2pdf"
+path = "src/lopure2pdf.rs"
+
+# 方案验证 B：unoserver 常驻（真 LibreOffice，通过 unoconvert 客户端调用）
+[[bin]]
+name = "unoserver2pdf"
+path = "src/unoserver2pdf.rs"
+
+# 正式服务：对外提供 docx→pdf 的 HTTP 接口，转换引擎走 unoserver（直连 XML-RPC）。
+[[bin]]
+name = "convertd"
+path = "src/convertd.rs"
 
 # 临时：定位 paint 阶段慢点用，定位完成后可删除。
 [[bin]]
