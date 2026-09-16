@@ -12,16 +12,17 @@ office2pdf = "0.6.8"
 dxpdf = "0.6.0"
 # 方案验证用：纯 Rust 的 LibreOffice 兼容实现（DOCX→PDF 走 docx_to_pdf_bytes）
 libreoffice-pure = "0.5.8"
-# dxpdf 内部用 log 0.4 打了分阶段耗时（debug 级），需要装一个日志后端才能看到
-env_logger = "0.11"
 zip = { version = "8", default-features = false, features = ["deflate"] }
 # 临时：bench_glyph 基准直接调用 Skia，量化字形 path 生成成本。定位完成后删除。
 # 不要加 "embed-freetype"：它会让产物名带 ftembed，而 0.99.0 没有该产物（404）→
 # 回退源码构建 → 需要 clone chromium/skia.googlesource.com → 国内必失败。
 skia-safe = { version = "0.99", features = ["textlayout"] }
-# docx→pdf 转换服务（bin: convertd）用：HTTP 服务端
+# docx→pdf 转换服务（bin: dxpdfd）用：HTTP 服务端
 axum = { version = "0.8.9", features = ["multipart"] }
 tokio = { version = "1.53.1", features = ["rt-multi-thread", "macros", "net", "signal", "time", "sync", "fs"] }
+# dxpdfd 拼 JSON 响应用。axum 的默认特性（含 json）本来就把 serde_json 拉进依赖树了，
+# 这里只是显式声明一下，不增加任何编译量。
+serde_json = "1"
 # 仅访问本机 unoserver 的明文 HTTP，故关闭默认特性（已确认 0.13 无 http1 开关，
 # HTTP/1.1 常开；关掉默认特性只是去掉 TLS/charset 等我们不用的东西）。
 reqwest = { version = "0.13.5", default-features = false }
@@ -59,10 +60,11 @@ path = "src/lopure2pdf.rs"
 name = "unoserver2pdf"
 path = "src/unoserver2pdf.rs"
 
-# 正式服务：对外提供 docx→pdf 的 HTTP 接口，转换引擎走 unoserver（直连 XML-RPC）。
+# 正式服务：常驻进程，对外提供 docx→pdf 的 HTTP 接口。
+# 流程是「上传 DOCX → 返回 PDF 下载地址 → 客户端再下载」，转换引擎在进程内走 dxpdf + Skia。
 [[bin]]
-name = "convertd"
-path = "src/convertd.rs"
+name = "dxpdfd"
+path = "src/dxpdfd.rs"
 
 # 临时：定位 paint 阶段慢点用，定位完成后可删除。
 [[bin]]
