@@ -1,16 +1,22 @@
-//! `dxpdfd` —— dxpdf + Skia 的 DOCX→PDF **常驻服务**。
+//! `dxpdfd` —— dxpdf + Skia 的 DOCX→PDF **常驻业务服务**。
 //!
-//! 两步式接口：上传 DOCX → 拿到下载地址 → 再按地址取 PDF。
+//! 业务动作：**上传用户 DOCX + 两个业务参数 → 填模板占位符 → 把用户内容原封不动
+//! 追加到模板末尾 → 整份转 PDF → 返回下载地址**。
 //!
 //! ```text
-//! POST /convert          multipart/form-data，字段 file=<docx>（可选 image_dpi）
-//!   → 200 {"id":"...","url":"http://host/download/<id>","filename":...,"pages":N,...}
+//! POST /convert          multipart/form-data
+//!                          file=<用户 docx>（必填）
+//!                          Fund_cnname=<基金中文名>（必填）
+//!                          letters_date=<日期字面量>（必填）
+//!                          image_dpi=<可选>
+//!   → 200 {"id":"...","url":"http://host/download/<id>","pages":N,...}
 //! GET  /download/<id>    → 200 application/pdf
 //! GET  /healthz          → 200 {"status":"ok",...}
 //! ```
 //!
-//! 转换管线：`docx_preprocess::patch_docx` → `dxpdf::docx::parse`
-//! → `dxpdf::render::render_with_font_mgr`。结果只落在进程内存里（带 TTL），不写磁盘。
+//! 合并与占位符的细节在 [`merge`]，转换引擎仍是 `dxpdf::docx::parse` +
+//! `dxpdf::render::render_with_font_mgr`。结果只落在进程内存里（带 TTL），不写磁盘
+//! （除非显式设置了 `DXPDFD_DEBUG_DUMP_DIR`）。
 //!
 //! 本 bin **自成一体**：只依赖 `Cargo.toml` 里的第三方 crate（axum / tokio / dxpdf /
 //! skia-safe / lopdf / zip / serde_json），**不依赖本仓库的 `water_mark` 库**，
@@ -19,11 +25,17 @@
 //!
 //! 配置全部走环境变量，见 [`Config::from_env`]。
 
+// `dxpdfd.rs` 是 bin 的 crate root，子模块不会按「同名目录」去找，
+// 所以显式指定路径，把合并逻辑单独放一个文件里。
+#[path = "dxpdfd/merge.rs"]
+mod merge;
+
 use std::collections::HashMap;
 use std::env;
 use std::io::{Cursor, Read, Write};
 use std::net::SocketAddr;
 use std::panic::{catch_unwind, AssertUnwindSafe};
+use std::path::PathBuf;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
@@ -43,6 +55,12 @@ use zip::ZipArchive;
 // 配置
 // ============================================================================
 
+/// 内置模板。业务上只有一个模板，按需求直接编译进二进制。
+///
+/// 想换模板而不重编译时用 `DXPDFD_TEMPLATE=<path>` 覆盖。
+const TEMPLATE_DOCX: &[u8] =
+    include_bytes!("../template-glv_template2-5a4c95e5792e47acac3dff429118d4cf.docx");
+
 struct Config {
     addr: SocketAddr,
     max_body_bytes: usize,
@@ -54,6 +72,11 @@ struct Config {
     /// 对外播报的地址前缀。留空则按请求的 `Host` 头推断（`http://<host>`）。
     /// 走了反向代理/HTTPS 时必须显式设置，否则返回的下载地址是错的。
     public_base: Option<String>,
+    /// 模板 DOCX 字节（内置，或 `DXPDFD_TEMPLATE` 指向的文件）。
+    template: Arc<Vec<u8>>,
+    /// 设了就把「模板+用户内容」合并后的 DOCX 落盘一份，便于人工核对「原封不动」。
+    /// 默认关闭：正式环境不该把业务文档写到磁盘上。
+    debug_dump_dir: Option<PathBuf>,
 }
 
 impl Config {
@@ -67,6 +90,17 @@ impl Config {
         let concurrency = env_usize("DXPDFD_CONCURRENCY")
             .unwrap_or_else(|| std::thread::available_parallelism().map(|n| n.get()).unwrap_or(1));
 
+        let template = match env::var("DXPDFD_TEMPLATE")
+            .ok()
+            .filter(|s| !s.trim().is_empty())
+        {
+            Some(p) => Arc::new(std::fs::read(&p).map_err(|e| format!("读取模板 {p} 失败: {e}"))?),
+            None => Arc::new(TEMPLATE_DOCX.to_vec()),
+        };
+        // 启动时就验一次模板能不能解包，别等到第一个请求才发现模板是坏的
+        zip::ZipArchive::new(Cursor::new(template.as_slice().to_vec()))
+            .map_err(|e| format!("内置模板不是合法的 DOCX(zip): {e}"))?;
+
         Ok(Self {
             addr,
             max_body_bytes: env_usize("DXPDFD_MAX_BODY_MB").unwrap_or(64) * 1024 * 1024,
@@ -78,6 +112,11 @@ impl Config {
             public_base: env::var("DXPDFD_PUBLIC_BASE")
                 .ok()
                 .filter(|s| !s.trim().is_empty()),
+            template,
+            debug_dump_dir: env::var("DXPDFD_DEBUG_DUMP_DIR")
+                .ok()
+                .filter(|s| !s.trim().is_empty())
+                .map(PathBuf::from),
         })
     }
 }
@@ -288,6 +327,8 @@ fn with_font_mgr<T>(f: impl FnOnce(&skia_safe::FontMgr) -> T) -> T {
 }
 
 enum ConvError {
+    /// 模板组装（占位符填充 / 追加内容 / 搬图片）失败。
+    Merge(String),
     /// DOCX 预处理失败（不是合法 zip、条目损坏等）。
     Preprocess(String),
     /// dxpdf 解析 DOCX 失败。
@@ -303,6 +344,7 @@ enum ConvError {
 impl ConvError {
     fn stage(&self) -> &'static str {
         match self {
+            ConvError::Merge(_) => "merge",
             ConvError::Preprocess(_) => "preprocess",
             ConvError::Parse(_) => "parse",
             ConvError::Render(_) => "render",
@@ -313,7 +355,8 @@ impl ConvError {
 
     fn message(&self) -> &str {
         match self {
-            ConvError::Preprocess(m)
+            ConvError::Merge(m)
+            | ConvError::Preprocess(m)
             | ConvError::Parse(m)
             | ConvError::Render(m)
             | ConvError::Output(m)
@@ -321,10 +364,12 @@ impl ConvError {
         }
     }
 
-    /// 文档本身有问题 → 422；服务端/环境问题 → 500。
+    /// 上传的文档本身有问题 → 422；服务端/环境问题 → 500。
     fn status(&self) -> StatusCode {
         match self {
-            ConvError::Preprocess(_) | ConvError::Parse(_) => StatusCode::UNPROCESSABLE_ENTITY,
+            ConvError::Merge(_) | ConvError::Preprocess(_) | ConvError::Parse(_) => {
+                StatusCode::UNPROCESSABLE_ENTITY
+            }
             ConvError::Render(_) | ConvError::Output(_) | ConvError::Panic(_) => {
                 StatusCode::INTERNAL_SERVER_ERROR
             }
@@ -332,18 +377,57 @@ impl ConvError {
     }
 }
 
+/// 一次请求需要的全部输入。`template` 用 `Arc` 传引用，避免每个请求都复制一份模板。
+struct Job {
+    docx: Bytes,
+    fund_cnname: String,
+    letters_date: String,
+    opts: dxpdf::RenderOptions,
+    template: Arc<Vec<u8>>,
+    dump_dir: Option<PathBuf>,
+}
+
 /// dxpdf 的 `render` 没有任何 panic 保护（只有它的 C ABI `capi.rs` 里包了
 /// `catch_unwind`），`FontMgr::new()` 内部也会 unwrap。常驻进程里一个畸形 DOCX
 /// 不能把整个服务带下去，所以这里必须兜住。
-fn convert_guarded(docx: Bytes, opts: dxpdf::RenderOptions) -> Result<(Bytes, usize), ConvError> {
-    match catch_unwind(AssertUnwindSafe(move || convert_inner(docx, opts))) {
+fn convert_guarded(job: Job) -> Result<(Bytes, usize), ConvError> {
+    match catch_unwind(AssertUnwindSafe(move || convert_inner(job))) {
         Ok(r) => r,
         Err(p) => Err(ConvError::Panic(panic_message(&p))),
     }
 }
 
-fn convert_inner(docx: Bytes, opts: dxpdf::RenderOptions) -> Result<(Bytes, usize), ConvError> {
-    let (patched, _times) = patch_docx(&docx).map_err(|e| ConvError::Preprocess(e.to_string()))?;
+fn convert_inner(job: Job) -> Result<(Bytes, usize), ConvError> {
+    let Job {
+        docx,
+        fund_cnname,
+        letters_date,
+        opts,
+        template,
+        dump_dir,
+    } = job;
+
+    // 1) 填占位符 + 把上传内容原封不动追加到模板末尾
+    let (merged, stats) = merge::build_merged_docx(
+        template.as_slice(),
+        &docx,
+        &fund_cnname,
+        &letters_date,
+    )
+    .map_err(ConvError::Merge)?;
+
+    if let Some(dir) = &dump_dir {
+        // 只在显式开启了调试落盘时才写，文件名带上时间戳避免互相覆盖
+        let name = format!("merged-{}.docx", new_id());
+        if let Err(e) = std::fs::write(dir.join(name), &merged) {
+            log_line(&format!("调试落盘失败({}): {e}", dir.display()));
+        }
+    }
+
+    // 2) 补全 dxpdf serde schema 要求的 w:ilvl（模板无 numbering.xml 时是空操作），
+    //    再交给 dxpdf 解析、渲染。
+    let (patched, _times) =
+        patch_docx(&merged).map_err(|e| ConvError::Preprocess(e.to_string()))?;
 
     let document = dxpdf::docx::parse(&patched).map_err(|e| ConvError::Parse(e.to_string()))?;
 
@@ -357,6 +441,11 @@ fn convert_inner(docx: Bytes, opts: dxpdf::RenderOptions) -> Result<(Bytes, usiz
     if pages == 0 {
         return Err(ConvError::Output("渲染结果页数为 0".to_string()));
     }
+
+    log_line(&format!(
+        "  合并完成：占位符 {} 处，回填默认属性 {} 个 run，搬入媒体 {} 个，脚注 {} 条 → {} 页",
+        stats.replaced, stats.backfilled, stats.media, stats.notes, pages
+    ));
 
     Ok((Bytes::from(pdf), pages))
 }
@@ -486,6 +575,8 @@ async fn handle_convert(
 
     let mut file: Option<(String, Bytes)> = None;
     let mut image_dpi: Option<f32> = None;
+    let mut fund_cnname: Option<String> = None;
+    let mut letters_date: Option<String> = None;
 
     loop {
         let field = match multipart.next_field().await {
@@ -514,6 +605,16 @@ async fn handle_convert(
                     }
                 }
             }
+            "Fund_cnname" | "fund_cnname" => {
+                if let Ok(txt) = field.text().await {
+                    fund_cnname = Some(txt.trim().to_string());
+                }
+            }
+            "letters_date" => {
+                if let Ok(txt) = field.text().await {
+                    letters_date = Some(txt.trim().to_string());
+                }
+            }
             "image_dpi" => {
                 if let Ok(txt) = field.text().await {
                     if let Ok(v) = txt.trim().parse::<f32>() {
@@ -528,18 +629,28 @@ async fn handle_convert(
         }
     }
 
-    let Some((orig_name, docx)) = file else {
+    let fail = |stage: &str, msg: &str| -> Response {
         state.counters.failed.fetch_add(1, Ordering::Relaxed);
-        return error_json(
-            StatusCode::BAD_REQUEST,
+        error_json(StatusCode::BAD_REQUEST, stage, msg)
+    };
+
+    let Some((orig_name, docx)) = file else {
+        return fail(
             "request",
             "缺少 file 字段（应以 multipart/form-data 上传 DOCX 文件）",
         );
     };
     if docx.is_empty() {
-        state.counters.failed.fetch_add(1, Ordering::Relaxed);
-        return error_json(StatusCode::BAD_REQUEST, "request", "file 字段为空");
+        return fail("request", "file 字段为空");
     }
+    // 两个业务参数都必填：静默用空串生成一份「缺名字/缺日期」的正式文件，
+    // 比直接报错危险得多。
+    let Some(fund_cnname) = fund_cnname.filter(|s| !s.is_empty()) else {
+        return fail("request", "缺少 Fund_cnname 字段（基金中文名）");
+    };
+    let Some(letters_date) = letters_date.filter(|s| !s.is_empty()) else {
+        return fail("request", "缺少 letters_date 字段（日期）");
+    };
     let docx_len = docx.len();
 
     // 不做无界排队：拿不到许可立刻 503，避免请求体在内存里越堆越多。
@@ -562,8 +673,17 @@ async fn handle_convert(
         None => state.opts,
     };
 
+    let job = Job {
+        docx,
+        fund_cnname,
+        letters_date,
+        opts,
+        template: state.cfg.template.clone(),
+        dump_dir: state.cfg.debug_dump_dir.clone(),
+    };
+
     state.counters.inflight.fetch_add(1, Ordering::Relaxed);
-    let join = tokio::task::spawn_blocking(move || convert_guarded(docx, opts)).await;
+    let join = tokio::task::spawn_blocking(move || convert_guarded(job)).await;
     state.counters.inflight.fetch_sub(1, Ordering::Relaxed);
     drop(permit);
 
@@ -831,7 +951,19 @@ async fn main() {
         state.cfg.max_body_bytes / 1024 / 1024,
         state.cfg.ttl.as_secs()
     ));
-    log_line("  POST /convert        上传 DOCX，返回 PDF 下载地址");
+    log_line(&format!(
+        "  模板：{}（{} 字节）",
+        if env::var("DXPDFD_TEMPLATE").is_ok() {
+            "DXPDFD_TEMPLATE 指定的文件"
+        } else {
+            "内置"
+        },
+        state.cfg.template.len()
+    ));
+    if let Some(d) = &state.cfg.debug_dump_dir {
+        log_line(&format!("  调试落盘已开启：{}", d.display()));
+    }
+    log_line("  POST /convert        上传 DOCX + Fund_cnname + letters_date，返回 PDF 下载地址");
     log_line("  GET  /download/{id}  下载转换好的 PDF");
     log_line("  GET  /healthz        健康检查");
 
