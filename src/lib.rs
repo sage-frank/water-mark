@@ -1,6 +1,6 @@
 use ab_glyph::{Font, FontRef, PxScale, OutlineCurve, Point, ScaleFont};
 use lopdf::content::{Content, Operation};
-use lopdf::{Document, Object, ObjectId, Stream};
+use lopdf::{Dictionary, Document, Object, ObjectId, Stream};
 use lopdf::dictionary;
 use std::ffi::CStr;
 use std::os::raw::c_char;
@@ -171,8 +171,8 @@ pub unsafe extern "C" fn add_pdf_watermark(
 /// - `text`: 水印文本
 ///
 /// # 返回
-/// - `Ok(String)`: 输出文件路径
-/// - `Err`: 处理过程中的错误信息
+/// - `Ok(())`: 水印已写入并保存成功
+/// - `Err`: 处理过程中的错误信息（含所有页面都注入失败的情况）
 pub fn run_watermark_process(
     input_path: &str,
     output_path: &str,
@@ -181,6 +181,18 @@ pub fn run_watermark_process(
 ) -> Result<(), Box<dyn std::error::Error>> {
     // 加载 PDF
     let mut doc = Document::load(input_path)?;
+
+    // 加密 PDF 必须先解密再处理。
+    // lopdf 不会自动解密：未解密时对象流（ObjStm）的字节是密文，解析不出里面的对象，
+    // 于是页树无法解析、大量对象静默丢失，最终写出的是一份损坏的文件。
+    if doc.is_encrypted() {
+        doc.decrypt("").map_err(|e| {
+            format!(
+                "输入 PDF 已加密，且无法用空密码解密（可能需要用户密码）：{:?}",
+                e
+            )
+        })?;
+    }
 
     // 读取并解析字体（一次性）
     let font_data = std::fs::read(font_path)?;
@@ -221,7 +233,10 @@ pub fn run_watermark_process(
     let text_w = measure_text_width(&font, text, DEFAULT_FONT_SIZE);
 
     // 遍历页面并注入资源与内容
+    let mut total_pages = 0usize;
+    let mut watermarked_pages = 0usize;
     for (page_num, object_id) in doc.get_pages() {
+        total_pages += 1;
         let (w, h) = page_size(&doc, object_id).unwrap_or((595.0, 842.0));
 
         // 获取页面旋转角度（支持旋转PDF）
@@ -260,6 +275,26 @@ pub fn run_watermark_process(
             eprintln!("WARN: 添加页面内容失败，跳过第 {} 页：{:?}", page_num, e);
             continue;
         }
+
+        watermarked_pages += 1;
+    }
+
+    // 一页都解析不出来，说明文档结构压根没读通（损坏、仍加密或页树异常）。
+    // 这种情况下写出的只会是一份残缺文件，必须报错而不是假装成功。
+    if total_pages == 0 {
+        return Err(
+            "未能从输入 PDF 中解析出任何页面，文件可能已损坏或仍处于加密状态，未生成输出文件"
+                .into(),
+        );
+    }
+
+    // 有页面但一页都没注入成功时，同样不要写出一个没有水印却自称成功的文件
+    if watermarked_pages == 0 {
+        return Err(format!(
+            "全部 {} 页均无法注入水印资源，未生成输出文件",
+            total_pages
+        )
+        .into());
     }
 
     doc.save(output_path)?;
@@ -500,46 +535,114 @@ fn get_page_rotation(doc: &Document, page_id: ObjectId) -> f32 {
     0.0
 }
 
+/// 取出 `owner[key]` 所指向的字典对象的 ObjectId；键缺失时新建一个空字典。
+///
+/// # 说明
+/// PDF 中同一个键有两种等价写法，都必须支持：
+/// - 间接引用：`/XObject 27 0 R`
+/// - 内联字典：`/XObject << /Im1 30 0 R >>`
+///
+/// 内联字典会被提升为间接对象（PDF 规范允许），这样上层只需围绕 ObjectId 操作，
+/// 不必为两种写法各写一套可选/可变借用逻辑。
+fn ensure_sub_dict(
+    doc: &mut Document,
+    owner: &mut Dictionary,
+    key: &[u8],
+) -> Result<ObjectId, lopdf::Error> {
+    // 先 clone 成自有值，避免 owner.get() 的不可变借用与 owner.set() 的可变借用冲突
+    match owner.get(key).ok().cloned() {
+        Some(Object::Reference(id)) => Ok(id),
+        Some(Object::Dictionary(d)) => {
+            let id = doc.add_object(d);
+            owner.set(key.to_vec(), Object::Reference(id));
+            Ok(id)
+        }
+        None => {
+            let id = doc.add_object(dictionary! {});
+            owner.set(key.to_vec(), Object::Reference(id));
+            Ok(id)
+        }
+        // 既不是引用也不是字典（例如 /Resources 写成了整数），属于结构异常
+        Some(other) => Err(lopdf::Error::ObjectType {
+            expected: "reference or dictionary",
+            found: other.enum_variant(),
+        }),
+    }
+}
+
+/// 沿 /Parent 链向上查找继承的 /Resources，返回其副本。
+///
+/// PDF 规范允许页面省略 /Resources 而由父 Pages 节点提供，Word/WPS 产出的 PDF 常见。
+/// 返回副本而非引用，是为了让调用方为本页建独立对象，不污染共用同一资源的兄弟页面。
+/// 链断掉或成环时返回 None。
+fn find_inherited_resources(doc: &Document, page_id: ObjectId) -> Option<Dictionary> {
+    let mut current = page_id;
+    for _ in 0..32 {
+        // 防御 /Parent 成环
+        let parent = doc
+            .get_dictionary(current)
+            .ok()?
+            .get(b"Parent")
+            .and_then(Object::as_reference)
+            .ok()?;
+        let parent_dict = doc.get_dictionary(parent).ok()?;
+        if let Ok(res) = parent_dict.get(b"Resources") {
+            if let Ok((_, dict)) = doc.dereference(res) {
+                if let Ok(d) = dict.as_dict() {
+                    return Some(d.clone());
+                }
+            }
+        }
+        current = parent;
+    }
+    None
+}
+
 /// 将XObject资源添加到PDF页面
 ///
 /// # 说明
 /// 创建或更新页面的Resources > XObject字典，
-/// 使其能引用水印XObject对象
+/// 使其能引用水印XObject对象。
+///
+/// /Resources 与 /XObject 各自都可能是间接引用、内联字典或缺失，
+/// 这里统一处理；页面自身没有 /Resources 时先按规范继承父节点的。
 fn add_xobject_to_page(
     doc: &mut Document,
     page_id: ObjectId,
     x_name: &str,
     x_id: ObjectId,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    let obj = doc.get_object_mut(page_id)?;
-    match obj {
-        Object::Dictionary(page_dict) => {
-            if !page_dict.has(b"Resources") {
-                page_dict.set(b"Resources", dictionary! {});
-            }
-            let resources = page_dict.get_mut(b"Resources")?.as_dict_mut()?;
-            if !resources.has(b"XObject") {
-                resources.set(b"XObject", dictionary! {});
-            }
-            let xobjects = resources.get_mut(b"XObject")?.as_dict_mut()?;
-            xobjects.set(x_name.as_bytes().to_vec(), Object::Reference(x_id));
-            Ok(())
+    // 1. 取页面对象的自有副本（页面可能是 Dictionary 或 Stream），
+    //    这样后续在副本上修改的同时还能继续借用 doc
+    let mut page_obj = doc.get_object(page_id)?.clone();
+    let page_dict = match &mut page_obj {
+        Object::Dictionary(d) => d,
+        Object::Stream(s) => &mut s.dict,
+        _ => return Err("page object is not a Dictionary or Stream".into()),
+    };
+
+    // 2. 页面自身没有 /Resources 时，按规范继承父 Pages 节点的资源
+    if !page_dict.has(b"Resources") {
+        if let Some(inherited) = find_inherited_resources(doc, page_id) {
+            let inherited_id = doc.add_object(inherited);
+            page_dict.set(b"Resources", Object::Reference(inherited_id));
         }
-        Object::Stream(s) => {
-            let page_dict = &mut s.dict;
-            if !page_dict.has(b"Resources") {
-                page_dict.set(b"Resources", dictionary! {});
-            }
-            let resources = page_dict.get_mut(b"Resources")?.as_dict_mut()?;
-            if !resources.has(b"XObject") {
-                resources.set(b"XObject", dictionary! {});
-            }
-            let xobjects = resources.get_mut(b"XObject")?.as_dict_mut()?;
-            xobjects.set(x_name.as_bytes().to_vec(), Object::Reference(x_id));
-            Ok(())
-        }
-        _ => Err("page object is not a Dictionary or Stream".into()),
     }
+    let resources_id = ensure_sub_dict(doc, page_dict, b"Resources")?;
+    // 写回页面对象（包含上面可能的继承 / 提升改动）
+    doc.set_object(page_id, page_obj);
+
+    // 3. 处理 /Resources 下的 /XObject
+    let mut resources = doc.get_dictionary(resources_id)?.clone();
+    let xobjects_id = ensure_sub_dict(doc, &mut resources, b"XObject")?;
+    doc.set_object(resources_id, Object::Dictionary(resources));
+
+    // 4. 登记水印XObject的名称 -> 对象引用
+    let mut xobjects = doc.get_dictionary(xobjects_id)?.clone();
+    xobjects.set(x_name.as_bytes().to_vec(), Object::Reference(x_id));
+    doc.set_object(xobjects_id, Object::Dictionary(xobjects));
+
+    Ok(())
 }
 
 /// 生成水印网格PDF操作指令（优化版本）
