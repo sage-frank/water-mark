@@ -7,25 +7,35 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // 1. 环境准备
     let args: Vec<String> = env::args().collect();
-    let input_path = args.get(1).map(|s| s.as_str()).unwrap_or("55.pdf");
-    let output_path = args.get(2).map(|s| s.as_str()).unwrap_or("w-out.pdf");
-    let font_path = ".\\STSongStd-Light-Acro\\STSongStd-Light-Acro.otf";
-    
+    let input_path = args
+        .get(1)
+        .map(|s| s.as_str())
+        .unwrap_or("/root/code/water-mark/55.pdf");
+
+    let output_path = args
+        .get(2)
+        .map(|s| s.as_str())
+        .unwrap_or("/root/code/water-mark/w-out.pdf");
+
+    let font_path = "/root/code/water-mark/SourceHanSerifCN-Bold.otf";
+
     let name = "张三";
     let date = "2026-02-05";
     let text = format!("致{}-{}:高度保密", name, date);
 
     println!("正在处理 PDF: {}", input_path);
-    
+
     // 2. 调用库中的核心逻辑
     match run_watermark_process(input_path, output_path, font_path, &text) {
         Ok(_) => {
             let duration = start_time.elapsed();
             println!("Rust 矢量水印生成成功！保存为 {}", output_path);
             println!("总耗时: {:.2?}", duration);
-        },
+        }
         Err(e) => {
             eprintln!("错误: 无法处理 PDF 文件: {}", e);
+            // 失败时返回非零退出码，避免脚本调用方把失败当成成功
+            std::process::exit(1);
         }
     }
 
