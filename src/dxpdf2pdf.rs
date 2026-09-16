@@ -147,12 +147,8 @@ fn patch_numpr_ilvl(xml: &str) -> String {
 }
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
-    // dxpdf 内部用 log 0.4 在 debug 级打印各阶段耗时，这里装一个日志后端把它显示出来。
-    // 想恢复安静，可设环境变量 RUST_LOG=warn。
-    env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("debug"))
-        .target(env_logger::Target::Stdout)
-        .format_timestamp_millis()
-        .init();
+    // 刻意不注册日志后端：dxpdf 内部的 log 输出会与下面 [1]~[6] 的计时段混在一起。
+    // 需要排查 dxpdf 内部细节时，临时加回 env_logger 并设 RUST_LOG=debug。
 
     let total_start = Instant::now();
     let mut times = StageTimes::default();
@@ -197,7 +193,6 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let pdf_bytes = dxpdf::render::render(document, &dxpdf::RenderOptions::default())?;
     times.render = t.elapsed();
     println!("[4] dxpdf::render::render     {:>10.2?}", times.render);
-    println!("      （上面 debug 行给出内部 resolve/registry/layout/subset/paint 明细）");
 
     // ---------- [5] 写出 ----------
     let t = Instant::now();
