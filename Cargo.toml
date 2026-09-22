@@ -27,6 +27,41 @@ serde_json = "1"
 # HTTP/1.1 常开；关掉默认特性只是去掉 TLS/charset 等我们不用的东西）。
 reqwest = { version = "0.13.5", default-features = false }
 
+# ---------------------------------------------------------------------------
+# rpad（Python rpa 服务的 Rust 等价实现，`src/rpad.rs`）用到的依赖。
+#
+# 下面这些版本号都已在 Cargo.lock 里（其它 crate 的传递依赖），声明为直接依赖
+# 不会给别的 bin 增加任何编译量，也不需要联网。
+#
+# 为什么不用 aws-sdk-s3 / aws-sdk-kms：AWS SDK for Rust 的 HTTPS 客户端只支持
+# rustls（aws-lc-rs，构建需要 cmake）或 ring（Windows 构建需要 nasm），本机
+# cmake / nasm / MSVC cl 都没有，编不过；所以这里用 reqwest(native-tls，Windows
+# 走 schannel，纯 Rust) + 自带的 SigV4 签名（`src/rpad/sigv4.rs`）访问 S3 和 KMS。
+#
+# 客户端解密：mfront/crm 是 AES-GCM（数据密钥过 KMS），hhcrm 是 Fernet
+# （AES-128-CBC + HMAC-SHA256），crm_v2 优先调 Go 编译的 kms_x64.dll。
+# ---------------------------------------------------------------------------
+toml = "0.8"
+serde = { version = "1", features = ["derive"] }
+url = "2"
+libloading = "0.8"
+tempfile = "3"
+aes = "0.8"
+cbc = { version = "0.1", features = ["alloc", "block-padding"] }
+hmac = "0.12"
+sha2 = "0.10"
+base64 = "0.22"
+aes-gcm = { version = "0.10", optional = true }
+# 合并不用 docx-rs：它是「模型级」库，read→write 会丢它不认识的元素（VML/图表/
+# 复杂域），对本模板（含 header4 的域、docDefaults 差异）保真度不够；且合并语义
+# （模板在前 + 分节符插入 + 页眉页脚沿用模板 + 页码连续）已由 `dxpdfd/merge.rs`
+# 实现并验收过 —— rpad 通过 `#[path]` 直接复用那个模块，不重复造轮子。
+
+[features]
+# rpad 的重依赖开关，见上。`reqwest/native-tls` 只为 rpad 打开，
+# 其它 bin 保持原来的 default-features = false（不引入 TLS）。
+rpad = ["dep:aes-gcm", "reqwest/native-tls"]
+
 
 [lib]
 name = "water_mark"
@@ -70,3 +105,16 @@ path = "src/dxpdfd.rs"
 [[bin]]
 name = "bench_glyph"
 path = "src/bench_glyph.rs"
+
+# Python 侧 `rpa`（app.py + rpa/views/api.py）的等价实现：
+# GET /api/v1/rpa/parse_file?src_file_key=..&template_file_key=..&fund_cnname=..
+#                            &letters_date=..&scheme=..
+# 按 scheme 从 S3 取两份 DOCX（含客户端解密）→ 填模板占位符 → 拼接 → dxpdf 转 PDF
+# → 直接返回 PDF 流。不再依赖 Word/COM，也不再依赖 Redis 全局锁。
+#
+# 需要 AWS SDK，所以带 `required-features`：
+#   cargo build --release --bin rpad --features rpad
+[[bin]]
+name = "rpad"
+path = "src/rpad.rs"
+required-features = ["rpad"]

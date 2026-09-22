@@ -7,3 +7,10 @@
 dbg_*.txt
 tmp_*
 numbering_preview.xml
+*.pdf
+*.docx
+*.xlsx
+
+# 真实配置含 AWS 密钥，仅 example 模板入库
+rpad.toml
+rpad.toml
