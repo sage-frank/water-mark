@@ -1,0 +1,17 @@
+[package]
+name = "watermark"
+version = "0.1.0"
+edition = "2021"
+description = "water_mark 的 PHP 原生扩展（ext-php-rs），php.ini 配置后直接调用 watermark_add()"
+
+[lib]
+# PHP 扩展本质是一个 C 动态库
+crate-type = ["cdylib"]
+
+[dependencies]
+ext-php-rs = "0.15"
+# 复用水印核心逻辑（water_mark crate 的 rlib）
+water_mark = { path = ".." }
+
+[profile.release]
+strip = "debuginfo"
