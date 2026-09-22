@@ -270,8 +270,11 @@ pub fn run_watermark_process(
 
         let content_ops = Content { operations: ops };
 
-        // 将水印内容添加到页面
-        if let Err(e) = doc.add_to_page_content(object_id, content_ops) {
+        // 将水印内容添加到页面。
+        // 注意：不能用 doc.add_to_page_content 直接追加——它会继承原内容
+        // 遗留的图形状态（如 Spire.Doc / wkhtmltopdf 的 Y 轴翻转 CTM），
+        // 导致水印文字头朝下，详见 append_watermark_isolated 的注释。
+        if let Err(e) = append_watermark_isolated(&mut doc, object_id, content_ops) {
             eprintln!("WARN: 添加页面内容失败，跳过第 {} 页：{:?}", page_num, e);
             continue;
         }
@@ -641,6 +644,88 @@ fn add_xobject_to_page(
     let mut xobjects = doc.get_dictionary(xobjects_id)?.clone();
     xobjects.set(x_name.as_bytes().to_vec(), Object::Reference(x_id));
     doc.set_object(xobjects_id, Object::Dictionary(xobjects));
+
+    Ok(())
+}
+
+/// 将水印内容追加到页面，并隔离原页面内容遗留的图形状态。
+///
+/// # 背景
+/// Spire.Doc、wkhtmltopdf 等工具生成的 PDF，页面内容流以一个**未配对**
+/// 的 `cm` 开头（如 `1 0 0 -1 0 842 cm`，即 Y 轴翻转），且全程不恢复。
+/// PDF 中同一页的多个内容流在语义上是首尾拼接的，直接把水印操作追加在
+/// 后面会让水印继承这个翻转后的坐标系：字形上下镜像（头朝下）、倾斜
+/// 方向与预期相反。
+///
+/// # 解决方案
+/// 与 PyMuPDF 等工具一致：在原内容流前后各插入一个只含 `q` / `Q` 的
+/// 小内容流，把原内容遗留的 CTM、裁剪路径等图形状态封装起来，让水印
+/// 始终绘制在干净的默认页面坐标系（原点左下、Y 轴向上）中。
+///
+/// # 说明
+/// - 原页面渲染效果不变（只是在整体外层包了一对 save/restore）；
+/// - 原内容中不配对的 `q` 会多弹一层 `Q`，属于无害的尾部冗余；
+/// - 只新增对象并重写本页 `/Contents`，不修改（可能被多页共享的）
+///   原内容流对象本身。
+fn append_watermark_isolated(
+    doc: &mut Document,
+    page_id: ObjectId,
+    watermark_ops: Content<Vec<Operation>>,
+) -> Result<(), Box<dyn std::error::Error>> {
+    // 1. 收集原 /Contents 的全部流引用。
+    //    /Contents 可能是：流引用 / 指向数组的引用 / 内联数组，也可能缺失。
+    let mut original_refs: Vec<Object> = Vec::new();
+    {
+        let page_obj = doc.get_object(page_id)?;
+        let page_dict = match page_obj {
+            Object::Dictionary(d) => d,
+            Object::Stream(s) => &s.dict,
+            other => {
+                return Err(format!(
+                    "page object is not a Dictionary or Stream: {}",
+                    other.enum_variant()
+                )
+                .into())
+            }
+        };
+        match page_dict.get(b"Contents") {
+            Ok(Object::Reference(id)) => match doc.get_object(*id)? {
+                // 常见：引用直接指向内容流
+                Object::Stream(_) => original_refs.push(Object::Reference(*id)),
+                // 少见：引用指向数组，展开其元素
+                Object::Array(arr) => original_refs.extend(arr.clone()),
+                _ => original_refs.push(Object::Reference(*id)),
+            },
+            Ok(Object::Array(arr)) => original_refs = arr.clone(),
+            // 无 /Contents 的空白页，无需隔离
+            _ => {}
+        }
+    }
+
+    // 2. 构造隔离用的 q/Q 小流与水印流
+    let open_id = doc.add_object(Stream::new(Dictionary::new(), b"q\n".to_vec()));
+    let close_id = doc.add_object(Stream::new(Dictionary::new(), b"\nQ\n".to_vec()));
+    let wm_data = watermark_ops
+        .encode()
+        .map_err(|e| format!("encode watermark page content failed: {:?}", e))?;
+    let wm_id = doc.add_object(Stream::new(Dictionary::new(), wm_data));
+
+    // 3. 重组 /Contents：q + 原内容 + Q + 水印
+    let mut contents: Vec<Object> = Vec::with_capacity(original_refs.len() + 3);
+    contents.push(Object::Reference(open_id));
+    contents.extend(original_refs);
+    contents.push(Object::Reference(close_id));
+    contents.push(Object::Reference(wm_id));
+
+    // 4. 写回页面对象（页面可能是 Dictionary 或 Stream）
+    let mut page_obj = doc.get_object(page_id)?.clone();
+    let page_dict = match &mut page_obj {
+        Object::Dictionary(d) => d,
+        Object::Stream(s) => &mut s.dict,
+        _ => unreachable!("第 1 步已校验过对象类型"),
+    };
+    page_dict.set(b"Contents", Object::Array(contents));
+    doc.set_object(page_id, page_obj);
 
     Ok(())
 }
