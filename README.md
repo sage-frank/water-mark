@@ -259,22 +259,32 @@ ext-php-rs = { version = "0.15", default-features = false, features = ["runtime"
 本机 GCC 7.3 的 libstdc++ 没有 C++20 的 `<bit>` 头文件（`fatal error: 'bit' file not found`），源码构建必然失败。
 
 解法：下载同一 hash、仅少一个 `ftembed` 标记的官方预编译包，重命名成构建脚本期望的文件名，
-再用 `SKIA_BINARIES_URL` 指向本地文件（构建脚本下载后并不校验 key）：
+再用 `SKIA_BINARIES_URL` 指向本地文件（构建脚本下载后并不校验 key）。
 
 ```bash
-# 1) 下载官方预编译包（17MB）
-mkdir -p /tmp/skia-prebuilt && cd /tmp/skia-prebuilt
+# 1) 下载官方预编译包（17MB），保存到持久位置（不要放 /tmp，重启会丢）
+mkdir -p /root/skia-prebuilt && cd /root/skia-prebuilt
 curl -L -o skia-binaries-a25a0fdb7d90429aa2d1-x86_64-unknown-linux-gnu-ftembed-jpegd-jpege-pdf-textlayout.tar.gz \
   "https://github.com/rust-skia/skia-binaries/releases/download/0.99.0/skia-binaries-a25a0fdb7d90429aa2d1-x86_64-unknown-linux-gnu-jpegd-jpege-pdf-textlayout.tar.gz"
 
-# 2) 用它构建（file:// 模板，{key} 由构建脚本填入）
-cd /root/code/water-mark/php_ext
-SKIA_BINARIES_URL="file:///tmp/skia-prebuilt/skia-binaries-{key}.tar.gz" cargo build --release
+# 2) 写入 ~/.cargo/config.toml 的 [env] 段（一劳永逸，所有构建自动生效）
+cat >> ~/.cargo/config.toml <<'EOF'
+[env]
+SKIA_BINARIES_URL = "file:///root/skia-prebuilt/skia-binaries-{key}.tar.gz"
+EOF
+
+# 3) 正常构建即可
+cd /root/code/water-mark/php_ext && cargo build --release
 ```
 
 说明：`embed-freetype` 仅表示「FreeType 静态编译进 Skia 而非用系统库」，功能一致；
 该预编译包为 Ubuntu 构建，运行时依赖系统 `libfreetype.so.6` 等，已在 Kylin V10 实测可用。
-本机完整的可复现构建日志：`4m 43s` 出 `libwatermark.so`（约 2.2MB）。
+本机已按上述步骤配置完毕（包在 `/root/skia-prebuilt/`，`~/.cargo/config.toml` 已含 `[env]` 段），
+后续 `cargo build` 无需再手动设置环境变量。
+
+> 另注：仓库曾有 `vendor/dxpdf`（给 crates.io 版打计时埋点的本地副本，`[patch.crates-io]` 指向它）。
+> 已连同 git 历史（含远端）一并移除，`Cargo.toml` 回到 crates.io 的 `dxpdf = "0.6.0"`；
+> 如需再加埋点，重新 `cargo vendor` 或 path 依赖即可。
 
 ## 4. Python 版本使用
 

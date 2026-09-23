@@ -1139,6 +1139,8 @@ dependencies = [
 [[package]]
 name = "dxpdf"
 version = "0.6.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "9684e7e6092d18a751639c24fb65f90140fb20b437d9fbdf0895f1d015abb544"
 dependencies = [
  "bitflags 2.13.2",
  "clap",
