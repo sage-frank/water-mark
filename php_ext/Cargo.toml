@@ -9,7 +9,9 @@ description = "water_mark 的 PHP 原生扩展（ext-php-rs），php.ini 配置�
 crate-type = ["cdylib"]
 
 [dependencies]
-ext-php-rs = "0.15"
+# 系统为 PHP 8.0：禁用 enum 特性（该特性需要 PHP 8.1+），
+# 本扩展只用 #[php_function]/#[php_module]，不涉及 PHP 枚举
+ext-php-rs = { version = "0.15", default-features = false, features = ["runtime"] }
 # 复用水印核心逻辑（water_mark crate 的 rlib）
 water_mark = { path = ".." }
 
