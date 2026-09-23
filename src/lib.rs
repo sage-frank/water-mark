@@ -13,20 +13,20 @@ use std::path::Path;
 /// 默认字体大小（点数）
 const DEFAULT_FONT_SIZE: f32 = 26.0;
 
-/// 水平方向水印间距（固定像素值）
-/// 注意：与 GRID_VERTICAL_MULTIPLIER 的含义不同（见下文）
+/// 水平方向水印间距（固定点数）
+/// 沿水印文字本身方向（行内）两个相邻水印起点之间的距离 = text_w + GRID_HORIZONTAL_GAP
 const GRID_HORIZONTAL_GAP: f32 = 30.0;
 
 /// 垂直方向水印间距倍数（相对于字体大小）
-/// 实际垂直间距 = DEFAULT_FONT_SIZE * GRID_VERTICAL_MULTIPLIER = 26.0 * 6.0 = 156.0
+/// 实际行间距 = DEFAULT_FONT_SIZE * GRID_VERTICAL_MULTIPLIER = 26.0 * 6.0 = 156.0 点
 /// 注意：这个值故意设置得比水平间距大，以避免垂直方向的水印过于密集
 const GRID_VERTICAL_MULTIPLIER: f32 = 6.0;
 
 /// 水印旋转角度（度数）
+/// 仅控制水印自身的倾斜方向，与 PDF 页面 /Rotate 无关
 const WATERMARK_ANGLE_DEG: f32 = 60.0;
 
 /// 水印网格中心在页面X轴的偏移（用于视觉居中调整）
-/// 根据字体和角度微调，使水印视觉上更居中
 const CENTER_X_OFFSET: f32 = 0.0;
 
 /// 水印网格中心在页面Y轴的偏移（用于视觉居中调整）
@@ -35,11 +35,26 @@ const CENTER_Y_OFFSET: f32 = 0.0;
 /// 覆盖范围倍数（相对于页面对角线长度）
 /// 较大的值能确保页面各个角落都被水印覆盖，但也会增加计算量
 /// 建议范围：1.5 ~ 2.5
-const COVERAGE_MULTIPLIER: f32 = 1.5;
+const COVERAGE_MULTIPLIER: f32 = 2.2;
 
 /// 可见性裁剪边界（单位：点数）
-/// 超出此边界外的水印将被忽略，以避免渲染页面外的内容
-const VISIBILITY_MARGIN: f32 = 50.0;
+/// 在 AABB 交集判断时给页面加一圈膨胀余量，避免边界处的水印被误删
+const VISIBILITY_MARGIN: f32 = 200.0;
+
+// ----------------------------------------------------------------------------
+// 水印 XObject（Form XObject）自身的 BBox
+// 必须与 run_watermark_process 中写入 "BBox" 的 4 个值完全一致
+// 可见性裁剪时会把它作为"水印文本在局部坐标系的范围"参与旋转后 AABB 的计算
+// ----------------------------------------------------------------------------
+
+/// 水印 XObject 局部坐标系：左下角 x（略留负余量避免裁剪到字形左下伸出部分）
+const XOBJ_BBOX_LLX: f32 = -10.0;
+/// 水印 XObject 局部坐标系：左下角 y（留足负余量避免裁剪到下伸字形）
+const XOBJ_BBOX_LLY: f32 = -50.0;
+/// 水印 XObject 局部坐标系：右上角 x（需覆盖最长可能的文本宽度，一般留 2000 足够）
+const XOBJ_BBOX_URX: f32 = 2000.0;
+/// 水印 XObject 局部坐标系：右上角 y（留足上伸字形 + 字号的余量）
+const XOBJ_BBOX_URY: f32 = 200.0;
 
 /// 单个PDF允许的最大水印数量
 /// 防止极端情况（极小的页面或间距）导致生成过多水印对象
@@ -210,8 +225,13 @@ pub fn run_watermark_process(
         dictionary! {
             "Type" => "XObject",
             "Subtype" => "Form",
-            // 使用常量而不是魔数（基于字体大小的 bbox）
-            "BBox" => vec![(-10).into(), (-50).into(), 2000.into(), 200.into()],
+            // 使用顶部定义的 XOBJ_BBOX_* 常量（必须与可见性裁剪使用的数值完全一致）
+            "BBox" => vec![
+                XOBJ_BBOX_LLX.into(),
+                XOBJ_BBOX_LLY.into(),
+                XOBJ_BBOX_URX.into(),
+                XOBJ_BBOX_URY.into(),
+            ],
             "Matrix" => vec![1.into(), 0.into(), 0.into(), 1.into(), 0.into(), 0.into()],
             "Resources" => dictionary! {
                 "ExtGState" => dictionary! {
@@ -237,7 +257,8 @@ pub fn run_watermark_process(
     let mut watermarked_pages = 0usize;
     for (page_num, object_id) in doc.get_pages() {
         total_pages += 1;
-        let (w, h) = page_size(&doc, object_id).unwrap_or((595.0, 842.0));
+        // 获取媒体框左下坐标 + 尺寸（4 个值），处理 llx/lly ≠ 0 的情况
+        let (mb_llx, mb_lly, w, h) = page_size(&doc, object_id).unwrap_or((0.0, 0.0, 595.0, 842.0));
 
         // 获取页面旋转角度（支持旋转PDF）
         let page_rotation = get_page_rotation(&doc, object_id);
@@ -251,11 +272,13 @@ pub fn run_watermark_process(
             continue;
         }
 
-        // 生成水印网格操作（传入页面旋转角度）
+        // 生成水印网格操作（传入 MediaBox 4 个完整值 + 页面旋转）
         let ops = match build_watermark_grid_ops_xobject_optimized(
             xobject_name,
             DEFAULT_FONT_SIZE,
             WATERMARK_ANGLE_DEG,
+            mb_llx,
+            mb_lly,
             w,
             h,
             text_w,
@@ -456,12 +479,13 @@ fn measure_text_width(font: &FontRef, text: &str, size: f32) -> f32 {
     w
 }
 
-/// 从PDF页面对象中提取媒体框尺寸
+/// 从PDF页面对象中提取媒体框：左下角 (llx, lly) + 尺寸 (w, h)
 ///
-/// # 返回
-/// - `Some((width, height))`: 页面宽高
-/// - `None`: 无法提取时返回默认值
-fn page_size(doc: &Document, page_id: ObjectId) -> Option<(f32, f32)> {
+/// # 为什么必须返回 llx/lly 而不只返回 w/h
+/// - 多数 PDF 规范允许 MediaBox 左下不是 (0,0)，例如扫描件常用 (20,30,595,842)。
+/// - 若把 (llx,lly) 当 (0,0) 来布网格，整页水印会偏移出页外或裁掉左下角落。
+/// - 本函数就是「展开 4 个坐标」的唯一真源，后续所有位置计算以它为准。
+fn page_size(doc: &Document, page_id: ObjectId) -> Option<(f32, f32, f32, f32)> {
     let page_obj = doc.get_object(page_id).ok()?;
     let dict = match page_obj {
         Object::Dictionary(d) => d,
@@ -469,11 +493,11 @@ fn page_size(doc: &Document, page_id: ObjectId) -> Option<(f32, f32)> {
         _ => return None,
     };
     if let Ok(Object::Array(arr)) = dict.get(b"MediaBox") && arr.len() >= 4 {
-            let llx = obj_to_f32(&arr[0]);
-            let lly = obj_to_f32(&arr[1]);
-            let urx = obj_to_f32(&arr[2]);
-            let ury = obj_to_f32(&arr[3]);
-            return Some((urx - llx, ury - lly));
+        let llx = obj_to_f32(&arr[0]);
+        let lly = obj_to_f32(&arr[1]);
+        let urx = obj_to_f32(&arr[2]);
+        let ury = obj_to_f32(&arr[3]);
+        return Some((llx, lly, urx - llx, ury - lly));
     }
     None
 }
@@ -730,39 +754,59 @@ fn append_watermark_isolated(
     Ok(())
 }
 
-/// 生成水印网格PDF操作指令（优化版本）
+/// 生成水印网格PDF操作指令（矩阵法版本，对任意 /Rotate + 任意 MediaBox 都正确）
 ///
-/// # 功能
-/// - 基于旋转角度计算水印网格位置
-/// - 支持 PDF 页面旋转（90°、180°、270°）
-/// - 生成PDF操作指令来绘制网格中的水印
-/// - 裁剪超出页面可见区域的水印以优化性能
+/// # 核心思想（解决老三的回忆 PDF 的第 3+ 页的 Bug）
+/// 老三的回忆 PDF：第 3 页起 MediaBox = (0,0,434,283) 即宽高=横屏 434×283，
+/// 同时 /Rotate=270°。之前的代码对 90/270 直接交换宽高导致又交换了一次，
+/// 锚点全部错位造成重叠，并且水印倾斜方向完全反导致倒立。
+///
+/// 这里不再用「if 90/270 交换宽高」的硬编码，而是严格按 PDF 规范用仿射矩阵，
+/// 任何 /Rotate × 任何 MediaBox 都能得到正确结果。
+///
+/// # 推导
+/// 1. **阅读器施加的显示变换（P → V，将 PDF 内部坐标变成用户看到的视觉坐标）**
+///    根据 PDF 1.7 规范 §7.2.3.3，/Rotate=R° 会先把页面绕 MediaBox 中心逆时针
+///    旋转 R°，然后把显示矩形对其到视口。把这个过程写成 P→V 的仿射：
+///      V = T_center · Rot(R) · T(-center_P) · P
+///    其中 center_P = (llx + w/2, lly + h/2)
+///
+/// 2. **我们需要反函数 V→P（在视觉坐标系布好点后，映射回 PDF 内部坐标写 cm）**：
+///      P = T(center_P) · Rot(-R) · T(-center_V) · V
+///    注意：因为 /Rotate=90/270 会交换宽高，视觉中心 center_V 的尺寸是
+///      vis_w = R=90|270 ? h : w
+///      vis_h = R=90|270 ? w : h
+///    所以 center_V = (vis_w/2, vis_h/2)。
+///
+/// 3. **对水印自身角度 θ 的补偿**
+///    阅读器显示时会把整页（含水印）再转 R°，所以我们把水印先转 -R°再转 θ°，
+///    最终用户看到的总倾斜就是：(θ − R) + R = θ，正好等于我们想要的水印角度。
+///    因此：水印最终 cm 的旋转部分 = Rot(θ − R) = Rot(-R) · Rot(θ)
 ///
 /// # 参数
-/// - `x_name`: XObject资源名称
+/// - `x_name`: XObject 资源名
 /// - `size`: 字体大小（用于计算垂直间距）
-/// - `angle`: 水印旋转角度（度数）
-/// - `width`: 页面宽度
-/// - `height`: 页面高度
-/// - `text_w`: 文本宽度（预计算）
-/// - `page_rotation`: 页面旋转角度（度数，来自 PDF Rotate 属性）
-///
-/// # 返回
-/// - `Ok(Vec<Operation>)`: PDF操作指令向量
-/// - `Err`: 参数错误或水印数量超限
+/// - `angle`:  **视觉上**希望的水印倾斜角度（度），例如 60°
+/// - `mb_llx`: MediaBox 左下角 x（PDF 内部坐标，不必为 0）
+/// - `mb_lly`: MediaBox 左下角 y（PDF 内部坐标，不必为 0）
+/// - `w`    : MediaBox 宽度
+/// - `h`    : MediaBox 高度
+/// - `text_w`: 预计算文本宽度
+/// - `page_rotation`: /Rotate 值（0/90/180/270）
 fn build_watermark_grid_ops_xobject_optimized(
     x_name: &str,
     size: f32,
     angle: f32,
-    width: f32,
-    height: f32,
+    mb_llx: f32,
+    mb_lly: f32,
+    w: f32,
+    h: f32,
     text_w: f32,
     page_rotation: f32,
 ) -> Result<Vec<Operation>, Box<dyn std::error::Error>> {
     let step_inner = text_w + GRID_HORIZONTAL_GAP;
     let step_outer = size * GRID_VERTICAL_MULTIPLIER;
 
-    // 添加最小间距校验，防止过度计算
     if !(step_inner > MIN_GRID_STEP_SIZE && step_outer > MIN_GRID_STEP_SIZE) {
         return Err(format!(
             "Grid step too small: inner={}, outer={}",
@@ -771,69 +815,153 @@ fn build_watermark_grid_ops_xobject_optimized(
         .into());
     }
 
-    // 叠加页面旋转角度，确保水印相对于内容方向正确
-    let effective_angle = angle + page_rotation;
-    let rad = effective_angle.to_radians();
-    let (c, s) = (rad.cos(), rad.sin());
+    // =====================================================================
+    // 1. 归一化 Rotate 角度到 0/90/180/270（PDF 规范的标准值）
+    // =====================================================================
+    let r = ((page_rotation as i32) % 360 + 360) % 360;
+    let rad_r = (r as f32).to_radians();
+    let (cr, sr) = (rad_r.cos(), rad_r.sin());
+    let rot_neg_r = |x: f32, y: f32| -> (f32, f32) {
+        // 2D 旋转 -R°（顺时针 R°）：x' =  x*cosR + y*sinR ; y' = -x*sinR + y*cosR
+        (x * cr + y * sr, -x * sr + y * cr)
+    };
 
-    let mut ops = Vec::new();
+    // =====================================================================
+    // 2. 视觉系的宽/高（90/270 时交换），以及视觉中心
+    // =====================================================================
+    let (vis_w, vis_h) = match r {
+        90 | 270 => (h, w),
+        _        => (w, h),
+    };
+    let cx_v = vis_w / 2.0 + CENTER_X_OFFSET;
+    let cy_v = vis_h / 2.0 - CENTER_Y_OFFSET;
 
-    // 计算覆盖范围
-    let diag = (width.powi(2) + height.powi(2)).sqrt() * COVERAGE_MULTIPLIER;
-    let cx = width / 2.0 + CENTER_X_OFFSET;
-    let cy = height / 2.0 - CENTER_Y_OFFSET;
+    // PDF 内部 MediaBox 中心
+    let cx_p = mb_llx + w / 2.0;
+    let cy_p = mb_lly + h / 2.0;
 
-    // 计算索引上限，避免浮点累积误差与无限循环
-    let v_start = -diag - 200.0;
-    let v_end = diag;
+    // =====================================================================
+    // 3. V → P 仿射映射（严格按 PDF 规范推导）
+    //    P = T(cx_p, cy_p) · Rot(-R) · T(-cx_v, -cy_v) · V
+    // =====================================================================
+    let v_to_p = |vx: f32, vy: f32| -> (f32, f32) {
+        // 步骤 A：V 减去视觉中心
+        let (ax, ay) = (vx - cx_v, vy - cy_v);
+        // 步骤 B：旋转 -R°
+        let (bx, by) = rot_neg_r(ax, ay);
+        // 步骤 C：加回 PDF 内部 MediaBox 中心
+        (bx + cx_p, by + cy_p)
+    };
+
+    // =====================================================================
+    // 4. 水印最终的旋转部分：Rot(angle + R)
+    //    推导：
+    //    阅读器显示时，对整页（含水印）还会再施加一次「顺时针 R°」= 数学逆时针 −R°
+    //    如果我们在 P 系写水印时旋转 φ，则用户视觉上看到的总旋转 = φ + (−R°)
+    //    我们希望它等于我们要的视觉水印角 angle（如 60°）
+    //        φ + (−R°) = angle   →   φ = angle + R°
+    //    例子（老三回忆 R=270°，angle=60°）：
+    //        φ = 60 + 270 = 330°，再加上阅读器的 −270° → 330−270 = 60° ✅
+    //    若写成 angle−R（错误），对 R=270° 得 −210°≡150°，(150−270)=−120°≠60°，差 180°，字正好上下倒立
+    // =====================================================================
+    let rad_wm = (angle + r as f32).to_radians();
+    let (cw, sw) = (rad_wm.cos(), rad_wm.sin());
+
+    // =====================================================================
+    // 5. 在视觉坐标系 (V) 中按斜向网格布锚点（中心对称，足够的覆盖余量）
+    // =====================================================================
+    let diag = (vis_w.powi(2) + vis_h.powi(2)).sqrt() * COVERAGE_MULTIPLIER;
+
+    let v_start = -diag - 400.0;
+    let v_end   =  diag + 400.0;
     let total_v_span = v_end - v_start;
     let v_count = ((total_v_span / step_outer).ceil() as isize).max(0) as usize;
 
-    let u_start = -diag;
-    let u_end = diag;
+    let u_start = -diag - 400.0;
+    let u_end   =  diag + 400.0;
     let total_u_span = u_end - u_start;
     let u_count = ((total_u_span / step_inner).ceil() as isize).max(0) as usize;
 
-    // 防止生成过多水印对象导致性能问题
     let estimated = v_count.saturating_mul(u_count);
     if estimated > MAX_ALLOWED_WATERMARKS {
         return Err(format!("Too many watermarks to render: {}", estimated).into());
     }
 
-    // 使用整数循环消除浮点累积误差
+    // =====================================================================
+    // 6. XObject 4 个局部角点 → 配合 AABB 可见性裁剪
+    // =====================================================================
+    let corners_local = [
+        (XOBJ_BBOX_LLX, XOBJ_BBOX_LLY),
+        (XOBJ_BBOX_URX, XOBJ_BBOX_LLY),
+        (XOBJ_BBOX_URX, XOBJ_BBOX_URY),
+        (XOBJ_BBOX_LLX, XOBJ_BBOX_URY),
+    ];
+
+    // 页面 P 系 AABB（完全按 MediaBox 的 4 个值，外加膨胀余量）
+    let page_min_x = mb_llx - VISIBILITY_MARGIN;
+    let page_min_y = mb_lly - VISIBILITY_MARGIN;
+    let page_max_x = mb_llx + w + VISIBILITY_MARGIN;
+    let page_max_y = mb_lly + h + VISIBILITY_MARGIN;
+
+    // 生成网格时，锚点用纯视觉坐标系的「角度=angle」旋转进行分布（和视觉上最终显示一致）
+    let rad_grid = angle.to_radians();
+    let (cg, sg) = (rad_grid.cos(), rad_grid.sin());
+
+    let mut ops: Vec<Operation> = Vec::with_capacity(estimated.min(4096) * 4);
+
     for vi in 0..=v_count {
         let v = v_start + (vi as f32) * step_outer;
         for ui in 0..=u_count {
             let u = u_start + (ui as f32) * step_inner;
-            // 应用2D旋转变换
-            let x = cx + u * c - v * s;
-            let y = cy + u * s + v * c;
 
-            // 裁剪超出页面可见区域的水印
-            if x > -VISIBILITY_MARGIN
-                && x < width + VISIBILITY_MARGIN
-                && y > -VISIBILITY_MARGIN
-                && y < height + VISIBILITY_MARGIN
-            {
-                ops.push(Operation::new("q", vec![])); // 保存图形状态
-                // cm 操作参数顺序：a b c d e f
-                // | a c e |   | cos  -sin  x |
-                // | b d f | = | sin   cos  y |
-                // | 0 0 1 |   | 0     0    1 |
-                ops.push(Operation::new(
-                    "cm",
-                    vec![
-                        c.into(),
-                        s.into(),
-                        (-s).into(),
-                        c.into(),
-                        x.into(),
-                        y.into(),
-                    ],
-                ));
-                ops.push(Operation::new("Do", vec![x_name.into()])); // 绘制XObject
-                ops.push(Operation::new("Q", vec![])); // 恢复图形状态
+            // 6a. 锚点在 V 系中的坐标（按 angle 斜向分布，保证视觉密度均匀）
+            let vx = cx_v + u * cg - v * sg;
+            let vy = cy_v + u * sg + v * cg;
+
+            // 6b. V → P 映射：得到在 PDF 内部坐标系中要写入的实际锚点
+            let (px, py) = v_to_p(vx, vy);
+
+            // 6c. 把 XObject 4 角点先按水印旋转角 (angle - R) 旋转，再平移到 (px,py)，
+            //     求 P 系下该水印的 AABB
+            let mut x_min =  f32::INFINITY;
+            let mut y_min =  f32::INFINITY;
+            let mut x_max = -f32::INFINITY;
+            let mut y_max = -f32::INFINITY;
+            for &(qx, qy) in &corners_local {
+                let tx = px + qx * cw - qy * sw;
+                let ty = py + qx * sw + qy * cw;
+                if tx < x_min { x_min = tx; }
+                if tx > x_max { x_max = tx; }
+                if ty < y_min { y_min = ty; }
+                if ty > y_max { y_max = ty; }
             }
+
+            // 6d. AABB 交集判断：不与页面膨胀矩形相交的直接跳过
+            let overlaps =
+                x_min <= page_max_x &&
+                x_max >= page_min_x &&
+                y_min <= page_max_y &&
+                y_max >= page_min_y;
+            if !overlaps {
+                continue;
+            }
+
+            // 6e. 写 PDF 指令
+            //     cm 的 a b c d 用最终水印旋转角 (angle - R)
+            ops.push(Operation::new("q", vec![]));
+            ops.push(Operation::new(
+                "cm",
+                vec![
+                    cw.into(),
+                    sw.into(),
+                    (-sw).into(),
+                    cw.into(),
+                    px.into(),
+                    py.into(),
+                ],
+            ));
+            ops.push(Operation::new("Do", vec![x_name.into()]));
+            ops.push(Operation::new("Q", vec![]));
         }
     }
 
