@@ -13,3 +13,7 @@ numbering_preview.xml
 
 # 真实配置含 AWS 密钥，仅 example 模板入库
 rpad.toml
+# 
+php_ext/target
+*.log
+/vendor
