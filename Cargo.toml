@@ -67,10 +67,7 @@ rpad = ["dep:aes-gcm", "reqwest/native-tls"]
 name = "water_mark"
 crate-type = ["cdylib", "rlib"] # cdylib 用于 PHP (FFI), rlib 用于 main.rs 调用
 
-# 临时：把 dxpdf 指向本地副本，便于给 paint 阶段加细粒度计时埋点。
-# 定位完成后删除本段即可回到 crates.io 版本。
-[patch.crates-io]
-dxpdf = { path = "vendor/dxpdf" }
+
 
 [[bin]]
 name = "water_mark_cli"
