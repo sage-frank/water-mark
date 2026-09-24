@@ -4,25 +4,13 @@ version = "0.1.0"
 edition = "2024"
 
 [dependencies]
+# --- 核心：水印库 / CLI / PHP 扩展都用到的，必须保留 ---
 # 0.36+ 才有 AES crypt filter 支持（0.33 只有 RC4），加密 PDF 必须靠它解密
 lopdf = "0.45"
 ab_glyph = "0.2"
 log = "0.3.9"
-office2pdf = "0.6.8"
-dxpdf = "0.6.0"
-# 方案验证用：纯 Rust 的 LibreOffice 兼容实现（DOCX→PDF 走 docx_to_pdf_bytes）
-libreoffice-pure = "0.5.8"
 zip = { version = "8", default-features = false, features = ["deflate"] }
-# 临时：bench_glyph 基准直接调用 Skia，量化字形 path 生成成本。定位完成后删除。
-# 不要加 "embed-freetype"：它会让产物名带 ftembed，而 0.99.0 没有该产物（404）→
-# 回退源码构建 → 需要 clone chromium/skia.googlesource.com → 国内必失败。
-skia-safe = { version = "0.99", features = ["textlayout"] }
-# docx→pdf 转换服务（bin: dxpdfd）用：HTTP 服务端
-axum = { version = "0.8.9", features = ["multipart"] }
 tokio = { version = "1.53.1", features = ["rt-multi-thread", "macros", "net", "signal", "time", "sync", "fs"] }
-# dxpdfd 拼 JSON 响应用。axum 的默认特性（含 json）本来就把 serde_json 拉进依赖树了，
-# 这里只是显式声明一下，不增加任何编译量。
-serde_json = "1"
 # 仅访问本机 unoserver 的明文 HTTP，故关闭默认特性（已确认 0.13 无 http1 开关，
 # HTTP/1.1 常开；关掉默认特性只是去掉 TLS/charset 等我们不用的东西）。
 reqwest = { version = "0.13.5", default-features = false }
@@ -52,15 +40,42 @@ hmac = "0.12"
 sha2 = "0.10"
 base64 = "0.22"
 aes-gcm = { version = "0.10", optional = true }
+serde_json = { version = "1", optional = true }
 # 合并不用 docx-rs：它是「模型级」库，read→write 会丢它不认识的元素（VML/图表/
 # 复杂域），对本模板（含 header4 的域、docDefaults 差异）保真度不够；且合并语义
 # （模板在前 + 分节符插入 + 页眉页脚沿用模板 + 页码连续）已由 `dxpdfd/merge.rs`
 # 实现并验收过 —— rpad 通过 `#[path]` 直接复用那个模块，不重复造轮子。
 
+# --- 可选重型依赖：默认不编译，按需打开 ---
+# docx→pdf 转换引擎（docx2pdf / dxpdf2pdf / dxpdfd / rpad 用），feature `docx`
+# 拉起整套 dxpdf + skia-bindings（→ chromium 源码，国内不可达）。
+office2pdf = { version = "0.6.8", optional = true }
+dxpdf = { version = "0.6.0", path = "vendor/dxpdf", optional = true }
+# 方案验证用：纯 Rust 的 LibreOffice 兼容实现（走 docx_to_pdf_bytes）。
+# 拉起 hayro + typst（编译量很大但不联网），feature `lopure`。
+libreoffice-pure = { version = "0.5.8", optional = true }
+# 临时：bench_glyph 基准直接调用 Skia，量化字形 path 生成成本。定位完成后删除。
+# 不要加 "embed-freetype"：它会让产物名带 ftembed，而 0.99.0 没有该产物（404）→
+# 回退源码构建 → 需要 clone chromium/skia.googlesource.com → 国内必失败。
+skia-safe = { version = "0.99", features = ["textlayout"], optional = true }
+# docx→pdf 转换服务（bin: dxpdfd）用：HTTP 服务端，feature `dxpdfd`。
+axum = { version = "0.8.9", features = ["multipart"], optional = true }
+
 [features]
-# rpad 的重依赖开关，见上。`reqwest/native-tls` 只为 rpad 打开，
-# 其它 bin 保持原来的 default-features = false（不引入 TLS）。
-rpad = ["dep:aes-gcm", "reqwest/native-tls"]
+# 默认空特性：构建 water_mark_cli / php_ext 时只编核心依赖（lopdf/ab_glyph/zip/...），
+# 不会触发 dxpdf + skia-bindings 的 chromium 源码构建（国内不可达）。
+#
+# 按需打开重型特性：
+#   --features docx       docx2pdf / dxpdf2pdf（需要 dxpdf + office2pdf）
+#   --features dxpdfd     dxpdfd HTTP 服务（在 docx 之上再加 axum）
+#   --features lopure     lopure2pdf（libreoffice-pure，会编译 hayro + typst）
+#   --features skia       bench_glyph 基准（直接调 skia-safe）
+#   --features rpad       rpad（AWS 客户端 + docx 引擎）
+rpad = ["dep:aes-gcm", "reqwest/native-tls", "dep:serde_json", "docx"]
+docx = ["dep:dxpdf", "dep:office2pdf"]
+dxpdfd = ["dep:axum", "docx"]
+lopure = ["dep:libreoffice-pure"]
+skia = ["dep:skia-safe"]
 
 
 [lib]
@@ -79,16 +94,19 @@ path = "src/main.rs"
 [[bin]]
 name = "docx2pdf"
 path = "src/docx2pdf.rs"
+required-features = ["docx"]
 
 
 [[bin]]
 name="dxpdf2pdf"
 path="src/dxpdf2pdf.rs"
+required-features = ["docx"]
 
 # 方案验证 A：libreoffice-pure（纯 Rust 实现，进程内转换）
 [[bin]]
 name = "lopure2pdf"
 path = "src/lopure2pdf.rs"
+required-features = ["lopure"]
 
 # 方案验证 B：unoserver 常驻（真 LibreOffice，通过 unoconvert 客户端调用）
 [[bin]]
@@ -100,11 +118,13 @@ path = "src/unoserver2pdf.rs"
 [[bin]]
 name = "dxpdfd"
 path = "src/dxpdfd.rs"
+required-features = ["dxpdfd"]
 
 # 临时：定位 paint 阶段慢点用，定位完成后可删除。
 [[bin]]
 name = "bench_glyph"
 path = "src/bench_glyph.rs"
+required-features = ["skia"]
 
 # Python 侧 `rpa`（app.py + rpa/views/api.py）的等价实现：
 # GET /api/v1/rpa/parse_file?src_file_key=..&template_file_key=..&fund_cnname=..
@@ -112,7 +132,7 @@ path = "src/bench_glyph.rs"
 # 按 scheme 从 S3 取两份 DOCX（含客户端解密）→ 填模板占位符 → 拼接 → dxpdf 转 PDF
 # → 直接返回 PDF 流。不再依赖 Word/COM，也不再依赖 Redis 全局锁。
 #
-# 需要 AWS SDK，所以带 `required-features`：
+# 需要 AWS SDK + dxpdf 引擎，所以带 `required-features`：
 #   cargo build --release --bin rpad --features rpad
 [[bin]]
 name = "rpad"

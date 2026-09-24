@@ -35,8 +35,10 @@ fn main() {
         }
     };
 
-    // 失败时返回非零退出码，避免脚本调用方把失败当成成功
-    if result.is_err() {
+    // 失败时打印原因并返回非零退出码：
+    // 只 exit(1) 而不打印的话，调用方（含人工排查）会完全看不到失败原因。
+    if let Err(e) = result {
+        eprintln!("错误：{}", e);
         std::process::exit(1);
     }
 }

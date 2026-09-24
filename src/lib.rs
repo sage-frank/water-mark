@@ -1,6 +1,6 @@
 use ab_glyph::{Font, FontRef, PxScale, OutlineCurve, Point, ScaleFont};
 use lopdf::content::{Content, Operation};
-use lopdf::{Dictionary, Document, Object, ObjectId, Stream};
+use lopdf::{Dictionary, Document, IncrementalDocument, Object, ObjectId, Stream};
 use lopdf::dictionary;
 use std::ffi::CStr;
 use std::os::raw::c_char;
@@ -221,36 +221,73 @@ pub fn run_watermark_process(
     let encoded = watermark_content
         .encode()
         .map_err(|e| format!("encode watermark content failed: {:?}", e))?;
-    let watermark_stream = Stream::new(
-        dictionary! {
-            "Type" => "XObject",
-            "Subtype" => "Form",
-            // 使用顶部定义的 XOBJ_BBOX_* 常量（必须与可见性裁剪使用的数值完全一致）
-            "BBox" => vec![
-                XOBJ_BBOX_LLX.into(),
-                XOBJ_BBOX_LLY.into(),
-                XOBJ_BBOX_URX.into(),
-                XOBJ_BBOX_URY.into(),
-            ],
-            "Matrix" => vec![1.into(), 0.into(), 0.into(), 1.into(), 0.into(), 0.into()],
-            "Resources" => dictionary! {
-                "ExtGState" => dictionary! {
-                    "GS1" => dictionary! {
-                        "Type" => "ExtGState",
-                        "ca" => 0.1f32, // fill alpha
-                        "CA" => 0.1f32, // stroke alpha
-                    }
-                }
-            },
-        },
-        encoded,
-    );
-
-    let xobject_id = doc.add_object(watermark_stream);
-    let xobject_name = "Watermark1";
-
     // 预计算文本宽度，避免重复计算
     let text_w = measure_text_width(&font, text, DEFAULT_FONT_SIZE);
+
+    // =====================================================================
+    // 数字签名：直接移除，让阅读器不再提示「签名无效」
+    //
+    // 加水印必然改写页面内容，而数字签名校验的是**签名时刻的原始文件字节**，
+    // 因此签名无论如何都不可能再通过校验（Adobe 会提示「签名无效：文档自签名
+    // 后已被更改或损坏」）。业务上不需要保留签名的法律效力，所以这里把签名域、
+    // 签名值字典、目录里的 /Perms 以及页面上的签名控件一并删除，让阅读器认为
+    // 这份 PDF 从未被签名过，从根上消除该告警。
+    // =====================================================================
+    let removed_signatures = strip_digital_signatures(&mut doc);
+    if removed_signatures > 0 {
+        eprintln!(
+            "INFO: 检测到数字签名，已剥离 {} 处签名校验信息（签章图章按原样保留）",
+            removed_signatures
+        );
+    }
+
+    // =====================================================================
+    // 保存策略：无签名时优先「增量更新」，否则「整篇重写」
+    //
+    // 增量更新只把新对象与新的交叉引用段追加在文件末尾，原始字节一字不动，
+    // 输出体积更小；但移除签名必须把原始字节一并重写，两条路径因此互斥。
+    //
+    // 例外：xref_start == 0 表示原文件的交叉引用表已丢失（扫描重建的 PDF），
+    // 此时没有可指向的 /Prev，增量保存会写出不完整的文件 → 退回整篇重写。
+    // =====================================================================
+    if removed_signatures == 0 && doc.xref_start != 0 {
+        let prev_bytes = std::fs::read(input_path)?;
+        let mut inc = IncrementalDocument::create_from(prev_bytes, doc);
+        let (total_pages, watermarked_pages) = watermark_incremental(&mut inc, &encoded, text_w)?;
+        ensure_pages_watermarked(total_pages, watermarked_pages)?;
+        inc.save(output_path)?;
+    } else {
+        if removed_signatures == 0 {
+            eprintln!("WARN: 输入 PDF 缺少交叉引用表（xref_start=0），退回整篇重写保存");
+        }
+        let (total_pages, watermarked_pages) =
+            watermark_full_rewrite(&mut doc, &encoded, text_w)?;
+        ensure_pages_watermarked(total_pages, watermarked_pages)?;
+        doc.save(output_path)?;
+    }
+
+    // 验证文件确实保存
+    if !Path::new(output_path).exists() {
+        return Err("输出文件保存失败".into());
+    }
+
+    Ok(())
+}
+
+/// 整篇重写保存路径：把整份 PDF 重新序列化后落盘。
+///
+/// **会破坏原有数字签名**（签名覆盖的字节被改写），因此只用于无法增量更新的
+/// 输入，例如交叉引用表缺失的扫描重建文件。正常输入请走 `watermark_incremental`。
+///
+/// # 返回
+/// `(总页数, 成功注入水印的页数)`
+fn watermark_full_rewrite(
+    doc: &mut Document,
+    encoded_watermark: &[u8],
+    text_w: f32,
+) -> Result<(usize, usize), Box<dyn std::error::Error>> {
+    let xobject_id = doc.add_object(build_watermark_xobject(encoded_watermark.to_vec()));
+    let xobject_name = "Watermark1";
 
     // 遍历页面并注入资源与内容
     let mut total_pages = 0usize;
@@ -258,13 +295,13 @@ pub fn run_watermark_process(
     for (page_num, object_id) in doc.get_pages() {
         total_pages += 1;
         // 获取媒体框左下坐标 + 尺寸（4 个值），处理 llx/lly ≠ 0 的情况
-        let (mb_llx, mb_lly, w, h) = page_size(&doc, object_id).unwrap_or((0.0, 0.0, 595.0, 842.0));
+        let (mb_llx, mb_lly, w, h) = page_size(doc, object_id).unwrap_or((0.0, 0.0, 595.0, 842.0));
 
         // 获取页面旋转角度（支持旋转PDF）
-        let page_rotation = get_page_rotation(&doc, object_id);
+        let page_rotation = get_page_rotation(doc, object_id);
 
         // 添加XObject资源到页面
-        if let Err(e) = add_xobject_to_page(&mut doc, object_id, xobject_name, xobject_id) {
+        if let Err(e) = add_xobject_to_page(doc, object_id, xobject_name, xobject_id) {
             eprintln!(
                 "WARN: 第 {} 页结构非标准，无法注入资源。错误：{:?}",
                 page_num, e
@@ -291,13 +328,11 @@ pub fn run_watermark_process(
             }
         };
 
-        let content_ops = Content { operations: ops };
-
         // 将水印内容添加到页面。
         // 注意：不能用 doc.add_to_page_content 直接追加——它会继承原内容
         // 遗留的图形状态（如 Spire.Doc / wkhtmltopdf 的 Y 轴翻转 CTM），
         // 导致水印文字头朝下，详见 append_watermark_isolated 的注释。
-        if let Err(e) = append_watermark_isolated(&mut doc, object_id, content_ops) {
+        if let Err(e) = append_watermark_isolated(doc, object_id, Content { operations: ops }) {
             eprintln!("WARN: 添加页面内容失败，跳过第 {} 页：{:?}", page_num, e);
             continue;
         }
@@ -305,6 +340,14 @@ pub fn run_watermark_process(
         watermarked_pages += 1;
     }
 
+    Ok((total_pages, watermarked_pages))
+}
+
+/// 保存前的完整性校验：一页都没解析出来、或一页都没注入成功，都不允许写出文件。
+fn ensure_pages_watermarked(
+    total_pages: usize,
+    watermarked_pages: usize,
+) -> Result<(), Box<dyn std::error::Error>> {
     // 一页都解析不出来，说明文档结构压根没读通（损坏、仍加密或页树异常）。
     // 这种情况下写出的只会是一份残缺文件，必须报错而不是假装成功。
     if total_pages == 0 {
@@ -323,14 +366,283 @@ pub fn run_watermark_process(
         .into());
     }
 
-    doc.save(output_path)?;
+    Ok(())
+}
 
-    // 验证文件确实保存
-    if !Path::new(output_path).exists() {
-        return Err("输出文件保存失败".into());
+/// 取出对象内部的字典（`Dictionary` 直接取，`Stream` 取它的 dict）。
+fn object_dict(obj: &Object) -> Option<&Dictionary> {
+    match obj {
+        Object::Dictionary(d) => Some(d),
+        Object::Stream(s) => Some(&s.dict),
+        _ => None,
+    }
+}
+
+/// `object_dict` 的可变版本。
+fn object_dict_mut(obj: &mut Object) -> Option<&mut Dictionary> {
+    match obj {
+        Object::Dictionary(d) => Some(d),
+        Object::Stream(s) => Some(&mut s.dict),
+        _ => None,
+    }
+}
+
+/// 判断对象是否为签名/时间戳**值**字典。
+///
+/// 常见形态：
+/// - `/Type /Sig`：普通数字签名；
+/// - `/Type /DocTimeStamp`：文档时间戳；
+/// - 省略 `/Type`，但带 `/ByteRange` + `/Contents`：少数签名实现的写法。
+fn is_signature_value(obj: &Object) -> bool {
+    let dict = match object_dict(obj) {
+        Some(d) => d,
+        None => return false,
+    };
+    if let Ok(Object::Name(name)) = dict.get(b"Type") {
+        if name.as_slice() == b"Sig" || name.as_slice() == b"DocTimeStamp" {
+            return true;
+        }
+    }
+    dict.has(b"ByteRange") && dict.has(b"Contents")
+}
+
+/// 剥离文档中的「签名校验链路」，让 Adobe 不再弹「签名无效」；同时把签章控件
+/// 降级为装饰性图章注释——/AP（外观流）里的签章图片原样保留在页面上。
+///
+/// 加水印必然改写页面内容，而签名校验的是**签名时刻的原始文件字节**，校验永远
+/// 走不通（Adobe 会提示「签名无效：文档自签名后已被更改或损坏」）。业务上不要求
+/// 保留签名的法律效力，因此：
+///
+/// 1. `/AcroForm` 字段树（含嵌套 `/Kids`）中 `/FT /Sig` 的字段，以及 `/V`
+///    指向签名值字典的字段——从 `/Fields` 里摘掉，字典本体就地清空；
+/// 2. 各页 `/Annots` 中的签名控件——`/Subtype /Widget` 改为 `/Subtype /Stamp`，
+///    并删除 `/Parent /FT /V /T`，把它从「签名表单域」变成「图章注释」；
+///    /AP（签章图片所在的外观流）保留，签章视觉效果由此获得；
+/// 3. 目录 `/Perms`（认证签名的 DocMDP 引用，留着会让 Adobe 再报「认证失效」）；
+/// 4. 签名值字典本体（`/Type /Sig`、`/Type /DocTimeStamp`）——没有它 Adobe
+///    就找不到校验目标，自然不再提示「签名无效」。
+///
+/// 返回被剥离的签名对象数量（签名域 + 签名值字典；图章注释本身不计入）。
+fn strip_digital_signatures(doc: &mut Document) -> usize {
+    use std::collections::HashSet;
+
+    // ---- 1. 签名值字典 ----
+    let mut sig_value_ids: HashSet<ObjectId> = HashSet::new();
+    for (&id, obj) in doc.objects.iter() {
+        if is_signature_value(obj) {
+            sig_value_ids.insert(id);
+        }
     }
 
-    Ok(())
+    // ---- 2. 签名域（/FT /Sig，或 /V 指向签名值字典）----
+    let mut sig_field_ids: HashSet<ObjectId> = HashSet::new();
+    for (&id, obj) in doc.objects.iter() {
+        let dict = match object_dict(obj) {
+            Some(d) => d,
+            None => continue,
+        };
+        let ft_is_sig = matches!(dict.get(b"FT"), Ok(Object::Name(n)) if n.as_slice() == b"Sig");
+        let v_is_sig = matches!(
+            dict.get(b"V"),
+            Ok(Object::Reference(v)) if sig_value_ids.contains(v)
+        );
+        if ft_is_sig || v_is_sig {
+            sig_field_ids.insert(id);
+        }
+    }
+
+    if sig_value_ids.is_empty() && sig_field_ids.is_empty() {
+        return 0;
+    }
+
+    // 签名域派生的「可见控件」：含 /Kids 时收集 /Kids 里的全部控件；
+    // 无 /Kids 时该字段字典本身就是控件（PDF 允许字段直接挂在 /Annots 上）。
+    let mut widget_ids: HashSet<ObjectId> = HashSet::new();
+    for &field_id in &sig_field_ids {
+        let kids_opt = doc
+            .get_object(field_id)
+            .ok()
+            .and_then(object_dict)
+            .and_then(|d| d.get(b"Kids").ok())
+            .cloned();
+        match kids_opt {
+            Some(Object::Array(kids)) => {
+                for kid in &kids {
+                    if let Object::Reference(kid_id) = kid {
+                        widget_ids.insert(*kid_id);
+                    }
+                }
+            }
+            _ => {
+                widget_ids.insert(field_id);
+            }
+        }
+    }
+    // ---- 3. 从 AcroForm 字段树中摘除签名域 ----
+    let acro_form = doc
+        .catalog()
+        .ok()
+        .and_then(|c| c.get(b"AcroForm").ok())
+        .cloned();
+    match acro_form {
+        Some(Object::Reference(acro_id)) => {
+            let fields = doc
+                .get_object(acro_id)
+                .ok()
+                .and_then(object_dict)
+                .and_then(|d| d.get(b"Fields").ok())
+                .cloned();
+            if let Some(Object::Array(fields)) = fields {
+                let kept = prune_signature_fields(doc, &fields, &sig_field_ids);
+                if let Ok(acro) = doc.get_dictionary_mut(acro_id) {
+                    acro.set(b"Fields", Object::Array(kept));
+                }
+            }
+        }
+        // 少见形态：AcroForm 内联在目录里
+        Some(Object::Dictionary(acro)) => {
+            if let Some(Object::Array(fields)) = acro.get(b"Fields").ok().cloned() {
+                let kept = prune_signature_fields(doc, &fields, &sig_field_ids);
+                let mut acro = acro;
+                acro.set(b"Fields", Object::Array(kept));
+                if let Ok(catalog) = doc.catalog_mut() {
+                    catalog.set(b"AcroForm", Object::Dictionary(acro));
+                }
+            }
+        }
+        _ => {}
+    }
+    // ---- 4. 把签名控件「降级」为装饰性图章 ----
+    //
+    // 控件的 /AP（外观流）里画的是签章图片——这正是「签章效果」的载体，必须保留。
+    // 我们只剥掉它的字段语义：把 /Subtype 从 Widget 改成 Stamp，让 Adobe 把
+    // 它当作普通图章注释渲染；并清掉 /FT /V /T /Parent 这些指向签名校验链路
+    // 的指针，免得读起来仍然像「未完成的签名域」。
+    for &widget_id in &widget_ids {
+        if let Ok(obj) = doc.get_object_mut(widget_id) {
+            if let Some(d) = object_dict_mut(obj) {
+                d.set(b"Subtype", Object::Name(b"Stamp".to_vec()));
+                d.remove(b"Parent");
+                // 极少数实现会把 /FT /V /T 直接挂在控件上（无 /Kids 的字段），
+                // 顺手也清掉，避免成为孤儿键。
+                d.remove(b"FT");
+                d.remove(b"V");
+                d.remove(b"T");
+            }
+        }
+    }
+
+    // ---- 5. 认证签名的权限声明也要清掉 ----
+    if let Ok(catalog) = doc.catalog_mut() {
+        catalog.remove(b"Perms");
+    }
+
+    // ---- 6. 抹掉签名值字典与「多控件」签名域字典（就地清空，不删对象） ----
+    //
+    // 不直接 `doc.objects.remove()`：删掉对象会在交叉引用表里留下没有条目的
+    // 「洞」（trailer 的 /Size 仍按最大对象号计算，条目却缺了），部分阅读器
+    // 会因此重建 xref 甚至报错。这里把对象原地清空成空字典——对象号照样出现在
+    // 交叉引用表里，任何残留引用都只会指向一个无害的空字典，且不再携带任何
+    // 签名语义（没有 /Type /Sig、/ByteRange、/Contents、/V）。
+    //
+    // 「单控件」签名域（无 /Kids，字段字典本身就是控件）不动——它已经降级为
+    // 图章注释，/AP 里的签章图片还要靠它展示。这种字段同时出现在 sig_field_ids
+    // 和 widget_ids 里，要靠 widget_ids.contains 跳过。
+    let blank = Object::Dictionary(Dictionary::new());
+    let mut removed = 0usize;
+    for id in sig_field_ids.iter() {
+        if widget_ids.contains(id) {
+            continue;
+        }
+        if let Some(obj) = doc.objects.get_mut(id) {
+            *obj = blank.clone();
+            removed += 1;
+        }
+    }
+    for id in sig_value_ids.iter() {
+        if let Some(obj) = doc.objects.get_mut(id) {
+            *obj = blank.clone();
+            removed += 1;
+        }
+    }
+    removed
+}
+/// 递归裁剪字段数组：丢弃整棵签名域子树；普通字段递归处理其 `/Kids`。
+///
+/// 只有真的从 `/Kids` 中摘掉了签名域才回写，避免无谓改动无关字段。
+fn prune_signature_fields(
+    doc: &mut Document,
+    entries: &[Object],
+    sig_fields: &std::collections::HashSet<ObjectId>,
+) -> Vec<Object> {
+    let mut kept: Vec<Object> = Vec::with_capacity(entries.len());
+    for entry in entries {
+        let field_id = match entry {
+            Object::Reference(id) => *id,
+            // 内联字段字典：不可能出现在收集到的签名域集合里，原样保留
+            _ => {
+                kept.push(entry.clone());
+                continue;
+            }
+        };
+        if sig_fields.contains(&field_id) {
+            continue;
+        }
+
+        let kids = doc
+            .get_object(field_id)
+            .ok()
+            .and_then(object_dict)
+            .and_then(|d| d.get(b"Kids").ok())
+            .cloned();
+        if let Some(Object::Array(kids)) = kids {
+            let new_kids = prune_signature_fields(doc, &kids, sig_fields);
+            if new_kids.len() != kids.len() {
+                if let Ok(obj) = doc.get_object_mut(field_id) {
+                    if let Some(d) = object_dict_mut(obj) {
+                        if new_kids.is_empty() {
+                            d.remove(b"Kids");
+                        } else {
+                            d.set(b"Kids", Object::Array(new_kids));
+                        }
+                    }
+                }
+            }
+        }
+        kept.push(entry.clone());
+    }
+    kept
+}
+
+
+/// 构造水印 Form XObject（两条保存路径共用）。
+///
+/// BBox 必须与 XOBJ_BBOX_* 常量一致——可见性裁剪是按这 4 个值算的。
+fn build_watermark_xobject(encoded: Vec<u8>) -> Stream {
+    Stream::new(
+        dictionary! {
+            "Type" => "XObject",
+            "Subtype" => "Form",
+            // 使用顶部定义的 XOBJ_BBOX_* 常量（必须与可见性裁剪使用的数值完全一致）
+            "BBox" => vec![
+                XOBJ_BBOX_LLX.into(),
+                XOBJ_BBOX_LLY.into(),
+                XOBJ_BBOX_URX.into(),
+                XOBJ_BBOX_URY.into(),
+            ],
+            "Matrix" => vec![1.into(), 0.into(), 0.into(), 1.into(), 0.into(), 0.into()],
+            "Resources" => dictionary! {
+                "ExtGState" => dictionary! {
+                    "GS1" => dictionary! {
+                        "Type" => "ExtGState",
+                        "ca" => 0.1f32, // fill alpha
+                        "CA" => 0.1f32, // stroke alpha
+                    }
+                }
+            },
+        },
+        encoded,
+    )
 }
 
 // ============================================================================
@@ -752,6 +1064,337 @@ fn append_watermark_isolated(
     doc.set_object(page_id, page_obj);
 
     Ok(())
+}
+
+// ============================================================================
+// 增量更新保存路径 —— 保住数字签名
+//
+// 与上面的整篇重写路径相比，这里所有改动（新增的水印对象、页面对象的新版本、
+// 资源字典的新版本）都写进「本次修订」，由 lopdf 追加到文件末尾，上一修订的
+// 原始字节一字不动。数字签名覆盖的正是那段原始字节，因此签名校验依旧通过。
+// ============================================================================
+
+/// 在「本次修订」与「上一修订」中查找对象（只读）。
+///
+/// 增量保存时新写的对象在 `new_document`，上一修订的对象在 `prev_documents`，
+/// 二者共同构成同一文档空间，查找时必须都看。
+fn lookup_object_any(inc: &IncrementalDocument, id: ObjectId) -> Option<&Object> {
+    inc.new_document
+        .get_object(id)
+        .ok()
+        .or_else(|| inc.get_prev_documents().get_object(id).ok())
+}
+
+/// 取出 `owner[key]` 指向的字典在本次修订中的对象 id（内联字典会被提升为间接对象）。
+fn ensure_sub_dict_incremental(
+    inc: &mut IncrementalDocument,
+    owner_id: ObjectId,
+    key: &[u8],
+) -> Result<ObjectId, Box<dyn std::error::Error>> {
+    /// 子字典在父对象上的三种形态
+    enum Slot {
+        Ref(ObjectId),
+        Inline(Dictionary),
+        Missing,
+    }
+
+    let slot = {
+        let owner = inc.new_document.get_object(owner_id)?;
+        let owner_dict = match owner {
+            Object::Dictionary(d) => d,
+            Object::Stream(s) => &s.dict,
+            other => {
+                return Err(format!(
+                    "object is not a Dictionary or Stream: {}",
+                    other.enum_variant()
+                )
+                .into())
+            }
+        };
+        match owner_dict.get(key) {
+            Ok(Object::Reference(id)) => Slot::Ref(*id),
+            Ok(Object::Dictionary(d)) => Slot::Inline(d.clone()),
+            // 值类型异常（例如写成了整数）：退回空字典，保证水印能画上
+            Ok(_) => Slot::Inline(Dictionary::new()),
+            Err(_) => Slot::Missing,
+        }
+    };
+
+    match slot {
+        // 复制进本次修订后再改，上一修订里的那个对象保持原样
+        Slot::Ref(id) => {
+            inc.opt_clone_object_to_new_document(id)?;
+            Ok(id)
+        }
+        Slot::Inline(dict) => {
+            let id = inc.new_document.add_object(dict);
+            set_dict_entry_ref(inc, owner_id, key, id)?;
+            Ok(id)
+        }
+        Slot::Missing => {
+            let id = inc.new_document.add_object(dictionary! {});
+            set_dict_entry_ref(inc, owner_id, key, id)?;
+            Ok(id)
+        }
+    }
+}
+
+/// 把 `owner[key]` 改成对 `target_id` 的间接引用
+fn set_dict_entry_ref(
+    inc: &mut IncrementalDocument,
+    owner_id: ObjectId,
+    key: &[u8],
+    target_id: ObjectId,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let owner = inc.new_document.get_object_mut(owner_id)?;
+    let owner_dict = match owner {
+        Object::Dictionary(d) => d,
+        Object::Stream(s) => &mut s.dict,
+        _ => return Err("object is not a Dictionary or Stream".into()),
+    };
+    owner_dict.set(key.to_vec(), Object::Reference(target_id));
+    Ok(())
+}
+
+/// 把页面的 /Resources 指向本次修订中的资源对象
+fn set_page_resources(
+    inc: &mut IncrementalDocument,
+    page_id: ObjectId,
+    resources_id: ObjectId,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let page = inc.new_document.get_object_mut(page_id)?;
+    let page_dict = match page {
+        Object::Dictionary(d) => d,
+        Object::Stream(s) => &mut s.dict,
+        _ => return Err("page object is not a Dictionary or Stream".into()),
+    };
+    page_dict.set(b"Resources", Object::Reference(resources_id));
+    Ok(())
+}
+
+/// 取页面 /Resources 在本次修订中对应的对象 id（必要时复制、提升或按规范继承）。
+///
+/// 对应整篇重写路径里的 `add_xobject_to_page` 第 2 步，区别是所有改动都写进
+/// 「本次修订」，上一修订的原始字节不受影响。
+fn ensure_page_resources_incremental(
+    inc: &mut IncrementalDocument,
+    page_id: ObjectId,
+) -> Result<ObjectId, Box<dyn std::error::Error>> {
+    /// /Resources 在页面上的三种形态
+    enum Slot {
+        Ref(ObjectId),
+        Inline(Dictionary),
+        Missing,
+    }
+
+    // 页面对象先复制进本次修订
+    inc.opt_clone_object_to_new_document(page_id)?;
+
+    let slot = {
+        let page = inc.new_document.get_object(page_id)?;
+        let page_dict = match page {
+            Object::Dictionary(d) => d,
+            Object::Stream(s) => &s.dict,
+            other => {
+                return Err(format!(
+                    "page object is not a Dictionary or Stream: {}",
+                    other.enum_variant()
+                )
+                .into())
+            }
+        };
+        match page_dict.get(b"Resources") {
+            Ok(Object::Reference(id)) => Slot::Ref(*id),
+            Ok(Object::Dictionary(d)) => Slot::Inline(d.clone()),
+            // 结构异常：退回空字典
+            Ok(_) => Slot::Inline(Dictionary::new()),
+            Err(_) => Slot::Missing,
+        }
+    };
+
+    let resources_id = match slot {
+        // 资源字典常被多页共享：复制进本次修订后统一修改，
+        // 之后引用它的页面看到的都是新版本（本工具给每页都加水印，正合需要）
+        Slot::Ref(id) => {
+            inc.opt_clone_object_to_new_document(id)?;
+            id
+        }
+        Slot::Inline(dict) => {
+            let id = inc.new_document.add_object(dict);
+            set_page_resources(inc, page_id, id)?;
+            id
+        }
+        // 页面自身没有 /Resources：按规范继承父 Pages 节点的资源。
+        // 否则页面级资源一旦缺少字体等条目，整页排版都会错乱。
+        Slot::Missing => {
+            let inherited =
+                find_inherited_resources(inc.get_prev_documents(), page_id).unwrap_or_default();
+            let id = inc.new_document.add_object(inherited);
+            set_page_resources(inc, page_id, id)?;
+            id
+        }
+    };
+
+    Ok(resources_id)
+}
+
+/// 增量更新版：把水印 XObject 登记到页面的资源字典里
+fn add_xobject_to_page_incremental(
+    inc: &mut IncrementalDocument,
+    page_id: ObjectId,
+    x_name: &str,
+    x_id: ObjectId,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let resources_id = ensure_page_resources_incremental(inc, page_id)?;
+    let xobjects_id = ensure_sub_dict_incremental(inc, resources_id, b"XObject")?;
+
+    let xobjects = inc.new_document.get_dictionary_mut(xobjects_id)?;
+    xobjects.set(x_name.as_bytes().to_vec(), Object::Reference(x_id));
+    Ok(())
+}
+
+/// 增量更新版：把水印内容追加到页面 /Contents。
+///
+/// q/Q 隔离逻辑与 `append_watermark_isolated` 完全一致（原因见那里的注释），
+/// 区别只是改写落在「本次修订」里，原内容流对象本身不被触碰。
+fn append_watermark_isolated_incremental(
+    inc: &mut IncrementalDocument,
+    page_id: ObjectId,
+    watermark_ops: Content<Vec<Operation>>,
+) -> Result<(), Box<dyn std::error::Error>> {
+    inc.opt_clone_object_to_new_document(page_id)?;
+
+    // 1. 收集原 /Contents 的流引用（这些对象留在上一修订里，字节不变）
+    let mut original_refs: Vec<Object> = Vec::new();
+    {
+        let page = inc.new_document.get_object(page_id)?;
+        let page_dict = match page {
+            Object::Dictionary(d) => d,
+            Object::Stream(s) => &s.dict,
+            other => {
+                return Err(format!(
+                    "page object is not a Dictionary or Stream: {}",
+                    other.enum_variant()
+                )
+                .into())
+            }
+        };
+        match page_dict.get(b"Contents") {
+            Ok(Object::Reference(id)) => match lookup_object_any(inc, *id) {
+                // 常见：引用直接指向内容流
+                Some(Object::Stream(_)) => original_refs.push(Object::Reference(*id)),
+                // 少见：引用指向数组，展开其元素
+                Some(Object::Array(arr)) => original_refs.extend(arr.clone()),
+                _ => original_refs.push(Object::Reference(*id)),
+            },
+            Ok(Object::Array(arr)) => original_refs = arr.clone(),
+            // 无 /Contents 的空白页，无需隔离
+            _ => {}
+        }
+    }
+
+    // 2. 新增隔离用的 q/Q 小流与水印流
+    let open_id = inc.new_document.add_object(Stream::new(Dictionary::new(), b"q\n".to_vec()));
+    let close_id = inc.new_document.add_object(Stream::new(Dictionary::new(), b"\nQ\n".to_vec()));
+    let wm_data = watermark_ops
+        .encode()
+        .map_err(|e| format!("encode watermark page content failed: {:?}", e))?;
+    // 网格指令是本次新增数据量的大头，压一压避免输出文件膨胀
+    let mut wm_stream = Stream::new(Dictionary::new(), wm_data);
+    if let Err(e) = wm_stream.compress() {
+        eprintln!("WARN: 水印内容流压缩失败（按未压缩写入）：{:?}", e);
+    }
+    let wm_id = inc.new_document.add_object(wm_stream);
+
+    // 3. 重组 /Contents：q + 原内容 + Q + 水印
+    let mut contents: Vec<Object> = Vec::with_capacity(original_refs.len() + 3);
+    contents.push(Object::Reference(open_id));
+    contents.extend(original_refs);
+    contents.push(Object::Reference(close_id));
+    contents.push(Object::Reference(wm_id));
+
+    let page = inc.new_document.get_object_mut(page_id)?;
+    let page_dict = match page {
+        Object::Dictionary(d) => d,
+        Object::Stream(s) => &mut s.dict,
+        _ => return Err("page object is not a Dictionary or Stream".into()),
+    };
+    page_dict.set(b"Contents", Object::Array(contents));
+
+    Ok(())
+}
+
+/// 增量更新主流程：把水印写进「本次修订」。
+///
+/// # 返回
+/// `(总页数, 成功注入水印的页数)`
+fn watermark_incremental(
+    inc: &mut IncrementalDocument,
+    encoded_watermark: &[u8],
+    text_w: f32,
+) -> Result<(usize, usize), Box<dyn std::error::Error>> {
+    let xobject_name = "Watermark1";
+
+    // 水印 Form XObject 作为本次修订的新对象写入
+    let mut watermark_stream = build_watermark_xobject(encoded_watermark.to_vec());
+    if let Err(e) = watermark_stream.compress() {
+        eprintln!("WARN: 水印 XObject 压缩失败（按未压缩写入）：{:?}", e);
+    }
+    let xobject_id = inc.new_document.add_object(watermark_stream);
+
+    // 页面列表与页面几何都取自上一修订（那里保留着原始页树）
+    let pages: Vec<(u32, ObjectId)> = inc.get_prev_documents().get_pages().into_iter().collect();
+
+    let mut total_pages = 0usize;
+    let mut watermarked_pages = 0usize;
+    for (page_num, page_id) in pages {
+        total_pages += 1;
+        // 获取媒体框左下坐标 + 尺寸（4 个值），处理 llx/lly ≠ 0 的情况
+        let (mb_llx, mb_lly, w, h) = page_size(inc.get_prev_documents(), page_id)
+            .unwrap_or((0.0, 0.0, 595.0, 842.0));
+
+        // 获取页面旋转角度（支持旋转PDF）
+        let page_rotation = get_page_rotation(inc.get_prev_documents(), page_id);
+
+        // 添加XObject资源到页面
+        if let Err(e) = add_xobject_to_page_incremental(inc, page_id, xobject_name, xobject_id) {
+            eprintln!(
+                "WARN: 第 {} 页结构非标准，无法注入资源。错误：{:?}",
+                page_num, e
+            );
+            continue;
+        }
+
+        // 生成水印网格操作（传入 MediaBox 4 个完整值 + 页面旋转）
+        let ops = match build_watermark_grid_ops_xobject_optimized(
+            xobject_name,
+            DEFAULT_FONT_SIZE,
+            WATERMARK_ANGLE_DEG,
+            mb_llx,
+            mb_lly,
+            w,
+            h,
+            text_w,
+            page_rotation,
+        ) {
+            Ok(v) => v,
+            Err(e) => {
+                eprintln!("WARN: 生成水印网格失败，跳过第 {} 页：{:?}", page_num, e);
+                continue;
+            }
+        };
+
+        if let Err(e) =
+            append_watermark_isolated_incremental(inc, page_id, Content { operations: ops })
+        {
+            eprintln!("WARN: 添加页面内容失败，跳过第 {} 页：{:?}", page_num, e);
+            continue;
+        }
+
+        watermarked_pages += 1;
+    }
+
+    Ok((total_pages, watermarked_pages))
 }
 
 /// 生成水印网格PDF操作指令（矩阵法版本，对任意 /Rotate + 任意 MediaBox 都正确）
