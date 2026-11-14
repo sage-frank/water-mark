@@ -1,0 +1,10 @@
+2026-09-18 05:15:59 [INFO] 日志文件: d:\code\pycode\rpa\pythonproject\water_mark\rpad.log（同时打到 stdout）
+2026-09-18 05:15:59 [INFO] rpad 启动: 监听 127.0.0.1:8090
+2026-09-18 05:15:59 [INFO] 配置来源: rpad.toml；scheme: [crm,other,hhcrm,mfront,crm_v2]；并发=1（1 等价 Python 全局锁）；抢许可超时=30000ms
+2026-09-18 05:49:58 [INFO] 收到请求: scheme=other src=test_src.docx template=glv_template2.docx fund=北京高域海1 date=2022-08-27
+2026-09-18 05:49:58 [INFO] 从s3中获取src文件key=test_src.docx
+2026-09-18 05:49:58 [INFO] 从s3中获取template文件key=glv_template2.docx
+2026-09-18 05:49:58 [INFO] s3 下载完成: src=234836B template=215945B cost=348ms
+2026-09-18 05:49:59 [INFO] 合并完成: replaced=3 backfilled=23 media=1 notes=1 docx=262170B cost=286ms
+2026-09-18 05:50:06 [INFO] 转 PDF 完成: pages=4 pdf=176640B docx=262170B cost=7103ms（预处理29ms / 解析148ms / 渲染6916ms / 校验9ms）
+2026-09-18 05:50:06 [INFO] 生成文件成功: template-glv_template2-d3c2133ce44fb607e1d819b03e2ede63.pdf pages=4 bytes=176640 cost=7.7s（排队0ms / 下载348ms / 合并286ms / 转PDF7103ms）

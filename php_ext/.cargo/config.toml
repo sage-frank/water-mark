@@ -1,0 +1,16 @@
+# ext-php-rs 官方要求的链接配置：
+# - Linux/macOS：扩展不直接链接 PHP，符号由 PHP 在加载 .so 时动态解析，
+#   因此必须允许未定义符号（-undefined dynamic_lookup）
+# - Windows：需要换用 rust-lld 链接器（本扩展只在 Linux 上编译部署，
+#   Windows 段仅为保持与官方模板一致）
+[target.'cfg(not(target_os = "windows"))']
+rustflags = ["-C", "link-arg=-Wl,-undefined,dynamic_lookup"]
+
+[target.x86_64-pc-windows-msvc]
+linker = "rust-lld"
+
+[target.i686-pc-windows-msvc]
+linker = "rust-lld"
+
+[target.'cfg(target_env = "musl")']
+rustflags = ["-C", "target-feature=-crt-static"]

@@ -408,11 +408,13 @@ fn convert_inner(job: Job) -> Result<(Bytes, usize), ConvError> {
     } = job;
 
     // 1) 填占位符 + 把上传内容原封不动追加到模板末尾
+    //    `strict = true`：dxpdfd 面向内部模板系统，遇到未知占位符宁可失败也不出脏文件。
     let (merged, stats) = merge::build_merged_docx(
         template.as_slice(),
         &docx,
         &fund_cnname,
         &letters_date,
+        true,
     )
     .map_err(ConvError::Merge)?;
 
@@ -443,8 +445,8 @@ fn convert_inner(job: Job) -> Result<(Bytes, usize), ConvError> {
     }
 
     log_line(&format!(
-        "  合并完成：占位符 {} 处，回填默认属性 {} 个 run，搬入媒体 {} 个，脚注 {} 条 → {} 页",
-        stats.replaced, stats.backfilled, stats.media, stats.notes, pages
+        "  合并完成：占位符 {} 处，回填默认属性 {} 个 run，搬入媒体 {} 个，脚注 {} 条，修复单段编号 {} 个 → {} 页",
+        stats.replaced, stats.backfilled, stats.media, stats.notes, stats.renumbered, pages
     ));
 
     Ok((Bytes::from(pdf), pages))

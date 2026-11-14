@@ -39,6 +39,21 @@ const REL_IMAGE: &str =
     "http://schemas.openxmlformats.org/officeDocument/2006/relationships/image";
 const REL_HYPERLINK: &str =
     "http://schemas.openxmlformats.org/officeDocument/2006/relationships/hyperlink";
+const REL_FOOTNOTES: &str =
+    "http://schemas.openxmlformats.org/officeDocument/2006/relationships/footnotes";
+const REL_ENDNOTES: &str =
+    "http://schemas.openxmlformats.org/officeDocument/2006/relationships/endnotes";
+
+const CT_FOOTNOTES: &str =
+    "application/vnd.openxmlformats-officedocument.wordprocessingml.footnotes+xml";
+const CT_ENDNOTES: &str =
+    "application/vnd.openxmlformats-officedocument.wordprocessingml.endnotes+xml";
+
+const NUMBERING: &str = "word/numbering.xml";
+const REL_NUMBERING: &str =
+    "http://schemas.openxmlformats.org/officeDocument/2006/relationships/numbering";
+const CT_NUMBERING: &str =
+    "application/vnd.openxmlformats-officedocument.wordprocessingml.numbering+xml";
 
 /// CT_RPr 的子元素顺序（ECMA-376 §17.3.2）。回填默认值时必须按这个顺序插，
 /// 否则产出的 docx 在 Word 里会被判为需要修复。
@@ -106,25 +121,43 @@ pub struct Stats {
     pub media: usize,
     /// 搬过来的脚注/尾注条数。
     pub notes: usize,
+    /// 被合并的「单段独立编号」个数 —— 上游生成器给每个编号段落单独建一个
+    /// numId + abstractNum，每个实例都从 1 计数，整个文档全是「1. 1. 1. …」。
+    /// 见 [`dedupe_single_use_lists`]。0 表示没有（或文档是健康的）。
+    pub renumbered: usize,
+    /// 模板里有、但本次没有取到值的占位符（形如 `word/header3.xml: {{xxx}}`）。
+    ///
+    /// Python 侧的 `docxtpl`（Jinja2）把未知变量 **渲染成空串** 就完事了 ——
+    /// 历史上这类占位符从没导致过失败。这里照抄该语义：值填空，但把清单记下来，
+    /// 由调用方决定是告警还是报错。
+    pub unknowns: Vec<String>,
 }
 
 // ---------------------------------------------------------------- 入口
 
 /// 把用户 DOCX 的内容追加到模板末尾，产出一个新的 DOCX 字节流。
+///
+/// `strict` 决定「模板里有取不到值的占位符」时怎么办：
+/// - `true`（`dxpdfd`）：直接失败，绝不出带占位符的文件；
+/// - `false`（`rpad`）：与 Python `docxtpl` 一致，把未知变量渲染成空串，
+///   清单放进 [`Stats::unknowns`] 由调用方记日志。
 pub fn build_merged_docx(
     template_bytes: &[u8],
     user_bytes: &[u8],
     fund_cnname: &str,
     letters_date: &str,
+    strict: bool,
 ) -> Result<(Vec<u8>, Stats), String> {
     let mut stats = Stats::default();
     let mut tpl = read_zip(template_bytes).map_err(|e| format!("解压内置模板失败: {e}"))?;
     let user = read_zip(user_bytes).map_err(|e| format!("解压上传的 DOCX 失败: {e}"))?;
 
     // ---- 1. 替换模板里的占位符（document.xml 和 header*.xml 里都有）--------
+    // 键名不带 {{ }} —— 扫描时由 `fill_placeholders_in_part` 统一解析 token，
+    // 这样 `{{Fund_cnname}}` 和 `{{ Fund_cnname }}` 都能命中。
     let values: Vec<(&str, String)> = vec![
-        ("{{Fund_cnname}}", fund_cnname.to_string()),
-        ("{{letters_date}}", letters_date.to_string()),
+        ("Fund_cnname", fund_cnname.to_string()),
+        ("letters_date", letters_date.to_string()),
     ];
     for (name, data) in tpl.iter_mut() {
         // 只看 `word/` 这一层：document.xml / header*.xml / footer*.xml / footnotes.xml…
@@ -133,20 +166,43 @@ pub fn build_merged_docx(
             continue;
         }
         let xml = String::from_utf8_lossy(data).into_owned();
-        if !xml.contains("{{") {
+        // 只跳过「连一个 `{` 都没有」的部件。**不能**写成 `contains("{{")`：
+        // Word 会把 `{{Fund_cnname}}` 拆成 `{`、`{`、`Fund`、`_`、`cnname`、`}`、`}`
+        // 多个 run（中间还可能夹 `<w:proofErr>` 拼写标记），XML 里根本不存在连续
+        // 的 `{{` 两个字符 —— 那样会把整篇跳过，占位符一个都替换不到。跨 run 的
+        // 活由 [`fill_placeholders_in_part`] 干（段内拼接 run 后再扫 token）。
+        if !xml.contains('{') {
             continue;
         }
-        let (new_xml, n) = fill_placeholders_in_part(&xml, &values);
-        if n > 0 {
-            stats.replaced += n;
+        let (new_xml, n, unknown) = fill_placeholders_in_part(&xml, &values);
+        stats.replaced += n;
+        let dirty = !unknown.is_empty();
+        for u in unknown {
+            stats.unknowns.push(format!("{name}: {u}"));
+        }
+        // 只有未知占位符的部件也要写回：它们要被渲染成空串，不能原样留着。
+        if n > 0 || dirty {
             *data = new_xml.into_bytes();
         }
     }
-    if stats.replaced == 0 {
-        return Err("模板里没有找到任何 {{...}} 占位符，模板可能已损坏".to_string());
+    // 一个 `{{...}}` 都没扫到 → 模板不对（传错文件 / 占位符不在 <w:t> 里）。
+    //
+    // 注意别把「扫到了占位符、但名字都不是已知变量」也算进来：那种情况
+    // `stats.unknowns` 非空，非严格模式下按 Jinja2 语义渲染成空串，由下面
+    // 「两个值必须真的落到文档里」那道检查给出更准的报错（"占位符名字变了"）。
+    if stats.replaced == 0 && stats.unknowns.is_empty() {
+        return Err(no_placeholder_diag(&tpl));
+    }
+    if strict && !stats.unknowns.is_empty() {
+        return Err(format!(
+            "模板里有未识别的占位符（没有对应变量值）: {}",
+            stats.unknowns.join("；")
+        ));
     }
     // 自检：正文可见文本里不允许残留 {{ —— 宁可直接失败，
     // 也不要产出一份带着占位符的正式文件。
+    // 非严格模式下不拦：docxtpl 的语义就是「该是怎样的文本就怎样的文本」，
+    // 残留只会出现在「只有 {{ 没有 }}」这种本就不是占位符的文本上。
     let mut all_text = String::new();
     for (name, data) in tpl.iter() {
         if !is_word_part(name) {
@@ -154,7 +210,7 @@ pub fn build_merged_docx(
         }
         let xml = String::from_utf8_lossy(data);
         let text = visible_text(&xml);
-        if text.contains("{{") || text.contains("}}") {
+        if strict && (text.contains("{{") || text.contains("}}")) {
             return Err(format!("部件 {name} 里仍有未替换的 {{{{...}}}} 占位符"));
         }
         all_text.push_str(&text);
@@ -204,12 +260,13 @@ pub fn build_merged_docx(
     let user_body = body_inner(&user_doc)?;
     let (mut user_content, user_final_sect) = take_trailing_sect_pr(user_body);
 
-    // 用户正文里的内联 sectPr（实测：横版那一节的 `w:pgSz w:orient="landscape"`）：
-    // 必须留着 —— 删掉的话横向页会变成纵向，内容重排，就不是「原封不动」了。
+    // 用户正文里的内联 sectPr（实测：上传文档第一节是 A4 横向）：分节**结构**照旧
+    // 保留（它是真实存在的分节符，删掉会改变分页），但纸张尺寸和页边距换成模板的
+    // —— 见 [`apply_tpl_page`]。
     //
     // 先摘掉它原有的页眉页脚引用 + pgNumType；模板的引用要等关系 ID 处理完
     // 再挂上去 —— 顺序反了的话，扫关系时会把模板的 rId15 当成上传文档的关系。
-    user_content = sanitize_sect_prs(&user_content);
+    user_content = sanitize_sect_prs(&user_content, &tpl_final);
 
     // ---- 4. 回填默认值（字号等），然后改写关系 ID -------------------------
     let (user_content, backfilled) = backfill_run_defaults(&user_content, &inject);
@@ -251,9 +308,21 @@ pub fn build_merged_docx(
     user_content = rewrite_rel_refs(&user_content, &id_map);
 
     // 4b. 脚注 / 尾注：把被正文引用的条目并进模板的 notes 部件
-    for (notes_part, ref_tag, root_close) in [
-        ("word/footnotes.xml", "w:footnoteReference", "</w:footnotes>"),
-        ("word/endnotes.xml", "w:endnoteReference", "</w:endnotes>"),
+    for (notes_part, ref_tag, root_close, rel_ty, content_ty) in [
+        (
+            "word/footnotes.xml",
+            "w:footnoteReference",
+            "</w:footnotes>",
+            REL_FOOTNOTES,
+            CT_FOOTNOTES,
+        ),
+        (
+            "word/endnotes.xml",
+            "w:endnoteReference",
+            "</w:endnotes>",
+            REL_ENDNOTES,
+            CT_ENDNOTES,
+        ),
     ] {
         let ids = scan_attr_values(&user_content, ref_tag, "w:id");
         if ids.is_empty() {
@@ -261,10 +330,26 @@ pub fn build_merged_docx(
         }
         let user_notes = part_opt(&user, notes_part).map(|s| s.to_string());
         let tpl_notes = part_opt(&tpl, notes_part).map(|s| s.to_string());
-        let (Some(user_notes), Some(tpl_notes)) = (user_notes, tpl_notes) else {
+        // 上传文档自己引用了脚注却没有脚注部件 —— 引用悬空，这是真的坏文档。
+        let Some(user_notes) = user_notes else {
             return Err(format!(
-                "上传文档引用了 {notes_part}，但两边至少有一方没有这个部件"
+                "上传文档引用了 {notes_part}，但上传文档里没有这个部件"
             ));
+        };
+        let Some(tpl_notes) = tpl_notes else {
+            // 模板压根不带脚注（本模板 `glv_template2` 就是如此），而上传文档有。
+            //
+            // Word / Python 侧追加文档时会**自动把脚注部件带进来**，从不报错；这里
+            // 等价处理：整个部件搬过去（模板里一条脚注都没有，ID 不可能冲突，无需
+            // 重编号），再补上关系和 ContentType —— 少了这两项，docx 在 Word 里会
+            // 被判成「需要修复」。
+            let target = notes_part.trim_start_matches("word/");
+            let rid = next_rel_id(&rels_new);
+            rels_new = append_rel(&rels_new, &rid, rel_ty, target, false);
+            ensure_part_override(&mut tpl, notes_part, content_ty);
+            set_part(&mut tpl, notes_part, user_notes.into_bytes());
+            stats.notes += ids.len();
+            continue;
         };
         let note_tag = notes_part
             .trim_start_matches("word/")
@@ -284,6 +369,36 @@ pub fn build_merged_docx(
             stats.notes += 1;
         }
         set_part(&mut tpl, notes_part, merged.into_bytes());
+    }
+
+    // 4c. 编号定义：把上传文档的 word/numbering.xml 搬进模板包 ----------------
+    //
+    // 自动编号段落靠 `<w:numPr><w:numId w:val="N"/></w:numPr>` 引用编号，格式
+    // 定义在 `word/numbering.xml`。模板（glv_template2）没有这个部件，之前不搬
+    // → 合并产物里所有 numId 悬空：Word 打开编号丢失，dxpdf 渲染成每段一个
+    // 「1.」（实测 report/2026-09-19/f6778b50…，36 个编号段落全部显示 1.）。
+    // dxpdf 侧不用管：`pdf.rs` 的 patch_docx 本来就会给 numbering.xml 补
+    // `<w:lvl w:ilvl>`、给 numPr 补 `<w:ilvl w:val="0"/>`，部件一进来就生效。
+    if user_content.contains("<w:numId") {
+        let user_numbering = part_opt(&user, NUMBERING)
+            .ok_or("上传文档使用了自动编号，但缺少 word/numbering.xml 部件")?
+            .to_string();
+        if part_opt(&tpl, NUMBERING).is_some() {
+            // 模板也带编号定义时 numId/abstractNum 会撞号，得整体加偏移再合并；
+            // 当前模板没有，先把这种情况显式挡住，别静默产出编号错乱的文档。
+            return Err(
+                "模板自带 numbering.xml，与上传文档的编号定义冲突（需扩展合并逻辑）"
+                    .to_string(),
+            );
+        }
+        let (fixed_numbering, fixed_content, renumbered) =
+            dedupe_single_use_lists(&user_numbering, &user_content);
+        user_content = fixed_content;
+        stats.renumbered = renumbered;
+        let rid = next_rel_id(&rels_new);
+        rels_new = append_rel(&rels_new, &rid, REL_NUMBERING, "numbering.xml", false);
+        ensure_part_override(&mut tpl, NUMBERING, CT_NUMBERING);
+        set_part(&mut tpl, NUMBERING, fixed_numbering.into_bytes());
     }
 
     // 关系都处理完了，现在把模板的页眉页脚引用挂到追加内容的每个 sectPr 上
@@ -311,12 +426,14 @@ pub fn build_merged_docx(
     //
     // 页眉页脚：所有节都指向模板那套；页码依次承接：1 → 2 → 3,4,5…
     //
-    // 末尾 sectPr 用**用户自己的**：这样追加内容最后一节保留它原本的页边距和纸张，
-    // 否则会被换成模板正文的页面设置（实测左右页边距从 1800 变 1440、版心变宽、
-    // 断行位置跟着变，就不是「原封不动」了）。只把页眉页脚引用换成模板的、并删掉
+    // 末尾 sectPr 仍用**用户自己的**（分节结构照旧），但纸张尺寸和页边距换成
+    // 模板的 —— 见 [`apply_tpl_page`]。另外把页眉页脚引用换成模板的、删掉
     // pgNumType 让页码接着往下走。
     let final_sect = match &user_final_sect {
-        Some(s) => insert_hf_refs(&strip_pg_num_type(&strip_hf_refs(s)), &tpl_refs),
+        Some(s) => {
+            let s = strip_pg_num_type(&strip_hf_refs(s));
+            insert_hf_refs(&apply_tpl_page(&s, &tpl_final), &tpl_refs)
+        }
         None => tpl_final_cont.clone(),
     };
 
@@ -338,13 +455,135 @@ pub fn build_merged_docx(
     Ok((out, stats))
 }
 
+// ---------------------------------------------------------------- 编号修复
+
+/// 在 `block` 里找第一个 `<tag …>` 标签，取其 `w:val` 属性的数值。
+fn num_val_in(block: &str, tag: &str) -> Option<u32> {
+    let p = block.find(tag)?;
+    let gt = tag_end(block, p)?;
+    rel_attr(&block[p..=gt], "w:val")?.parse().ok()
+}
+
+/// abstractNum 第 0 级的 numFmt（`decimal` / `bullet` / …）。
+///
+/// OOXML 要求 `<w:lvl>` 按 ilvl 从 0 起递增排列，第一个就是第 0 级。注意
+/// `w:abstractNumId="N"` 只出现在 abstractNum 的**开标签**上（`<w:num>` 里的
+/// 映射写的是子元素 `<w:abstractNumId w:val="N"/>`），所以按这个模式找不会找错。
+fn abstract_lvl0_fmt(numbering: &str, abs_id: u32) -> Option<String> {
+    let needle = format!(r#"w:abstractNumId="{abs_id}""#);
+    let s = numbering.find(&needle)?;
+    let seg = &numbering[s..];
+    let close = seg.find("</w:abstractNum>")?;
+    let block = &seg[..close];
+    let ls = block.find("<w:lvl ")?;
+    let lvl = &block[ls..];
+    let lend = lvl.find("</w:lvl>")?;
+    let fs = lvl[..lend].find("<w:numFmt ")?;
+    let fgt = tag_end(lvl, fs)?;
+    rel_attr(&lvl[fs..=fgt], "w:val")
+}
+
+/// 修复「每个列表段落一个独立编号实例」的病态结构，返回
+/// `(新 numbering.xml, 新 document 片段, 被合并的编号数)`。
+///
+/// 上游生成器（非 Word 导出）常给**每个**编号段落单独建一个 numId +
+/// abstractNum（实测一份 src：36 个编号段落 = 36 个独立实例）：每个实例都从
+/// 1 计数，整个文档就成了「1. 1. 1. …」。判据与修法：
+///
+/// - 只动 `numFmt="decimal"`（真数字列表）；bullet 等符号列表没有「连续」概念；
+/// - 只动「全文只被引用一次、且只用到第 0 级」的 numId —— 被引用 ≥2 次的本来就
+///   是连续列表，用了 ilvl>0 的多级列表语义复杂，一律保持原样（对健康文档零影响）；
+/// - 把这些 numId 的引用全部改写到其中最小的那个，多余的 `<w:num>` 定义删掉
+///   （`<w:abstractNum>` 留着无害，Word 会忽略没有 num 引用的定义）。
+fn dedupe_single_use_lists(numbering: &str, doc: &str) -> (String, String, usize) {
+    // 1) 正文里 numPr 的引用情况：numId → (引用次数, 最大层级)
+    let mut usage: HashMap<u32, (usize, u32)> = HashMap::new();
+    let mut rest = doc;
+    while let Some(s) = rest.find("<w:numPr>") {
+        let after = &rest[s + 9..];
+        let Some(e) = after.find("</w:numPr>") else { break };
+        let block = &after[..e];
+        if let Some(n) = num_val_in(block, "<w:numId") {
+            let ilvl = num_val_in(block, "<w:ilvl").unwrap_or(0);
+            let u = usage.entry(n).or_insert((0, 0));
+            u.0 += 1;
+            u.1 = u.1.max(ilvl);
+        }
+        rest = &after[e..];
+    }
+    if usage.is_empty() {
+        return (numbering.to_string(), doc.to_string(), 0);
+    }
+
+    // 2) numbering.xml 里 numId → abstractNumId 的映射
+    let mut num2abs: HashMap<u32, u32> = HashMap::new();
+    let mut i = 0usize;
+    while let Some(rel) = numbering[i..].find("<w:num ") {
+        let s = i + rel;
+        let seg = &numbering[s..];
+        let Some(close) = seg.find("</w:num>") else { break };
+        let block = &seg[..close + 8];
+        let open_gt = block.find('>').map(|g| g + 1).unwrap_or(0);
+        if let (Some(n), Some(a)) = (
+            rel_attr(&block[..open_gt], "w:numId").and_then(|v| v.parse().ok()),
+            num_val_in(block, "<w:abstractNumId"),
+        ) {
+            num2abs.insert(n, a);
+        }
+        i = s + close + 8;
+    }
+
+    // 3) 挑出可以合并的 numId
+    let mut cands: Vec<u32> = usage
+        .iter()
+        .filter(|(n, u)| {
+            u.0 == 1
+                && u.1 == 0
+                && num2abs
+                    .get(n)
+                    .and_then(|a| abstract_lvl0_fmt(numbering, *a))
+                    .as_deref()
+                    == Some("decimal")
+        })
+        .map(|(n, _)| *n)
+        .collect();
+    cands.sort_unstable();
+    if cands.len() < 2 {
+        return (numbering.to_string(), doc.to_string(), 0);
+    }
+    let target = cands[0];
+
+    // 4) 正文：把「孤立」numId 的引用全部改写到 target 上
+    let mut new_doc = doc.to_string();
+    for &n in &cands[1..] {
+        new_doc = new_doc.replace(
+            &format!(r#"<w:numId w:val="{n}"/>"#),
+            &format!(r#"<w:numId w:val="{target}"/>"#),
+        );
+    }
+
+    // 5) numbering.xml：删掉不再被引用的 <w:num> 定义
+    let mut new_numbering = numbering.to_string();
+    for &n in &cands[1..] {
+        let needle = format!(r#"<w:num w:numId="{n}""#);
+        while let Some(s) = new_numbering.find(&needle) {
+            let Some(e) = new_numbering[s..].find("</w:num>") else { break };
+            new_numbering.replace_range(s..s + e + 8, "");
+        }
+    }
+
+    (new_numbering, new_doc, cands.len() - 1)
+}
+
 // ---------------------------------------------------------------- zip 读写
 
 type Entries = Vec<(String, Vec<u8>)>;
 
 fn read_zip(bytes: &[u8]) -> Result<Entries, String> {
+    // 直接借入 `bytes`：zip 只需要 Read + Seek，`Cursor<&[u8]>` 就够，
+    // 不必先把整份文档（几百 KB~几 MB）拷一份。
     let mut archive =
-        ZipArchive::new(Cursor::new(bytes.to_vec())).map_err(|e| format!("不是合法 zip: {e}"))?;
+        ZipArchive::new(Cursor::new(bytes)).map_err(|e| format!("不是合法 zip: {e}"))?;
     let mut out = Entries::with_capacity(archive.len());
     for i in 0..archive.len() {
         let mut f = archive.by_index(i).map_err(|e| e.to_string())?;
@@ -398,6 +637,72 @@ fn set_part(entries: &mut Entries, name: &str, data: Vec<u8>) {
     } else {
         entries.push((name.to_string(), data));
     }
+}
+
+/// 往 `[Content_Types].xml` 补一条 Override（已有则不动）。
+///
+/// 新增部件必须登记：只把 `word/footnotes.xml` 塞进包而不登记的，Word 打开时会
+/// 报「文件已损坏，需要修复」。注意别和上面的 `ensure_content_type` 搞混 —— 那个
+/// 是按**扩展名**补 `Default`（给搬进来的图片用），这个是按**部件名**补
+/// `Override`（给新增的 notes 部件用）。
+fn ensure_part_override(entries: &mut Entries, part_name: &str, content_type: &str) {
+    let Some(cur) = part_opt(entries, CONTENT_TYPES).map(|s| s.to_string()) else {
+        return;
+    };
+    // 同一个部件只允许一条 Override，重复会直接破坏包结构。
+    if cur.contains(&format!("PartName=\"/{part_name}\"")) {
+        return;
+    }
+    let Some(at) = cur.rfind("</Types>") else {
+        return;
+    };
+    let updated = format!(
+        "{}<Override PartName=\"/{part_name}\" ContentType=\"{content_type}\"/>{}",
+        &cur[..at],
+        &cur[at..]
+    );
+    set_part(entries, CONTENT_TYPES, updated.into_bytes());
+}
+
+/// 「模板里一个占位符都没有」时的报错 + 诊断。
+///
+/// 直接失败是对的（那样产出的文件里基金名/日期是空的），但报错必须能回答
+/// 「是我传错文件，还是占位符写在 Word 字段里、<w:t> 扫不到」——这两者的
+/// 处理办法完全不同，所以把实测到的几个数字一并报出来。
+fn no_placeholder_diag(tpl: &Entries) -> String {
+    let mut parts = 0usize;
+    let mut braces = 0usize;
+    let mut joined = 0usize;
+    let mut full = 0usize;
+    let mut instr = 0usize;
+    for (name, data) in tpl.iter() {
+        if !is_word_part(name) {
+            continue;
+        }
+        parts += 1;
+        let xml = String::from_utf8_lossy(data);
+        if xml.contains("{{") {
+            braces += 1;
+        }
+        // 把各 `<w:t>` 拼起来再看一遍：占位符被 Word 拆成多个 run 时，XML 里没有
+        // 连续的 `{{`，只有拼完才认得出。这一步能区分「模板里压根没占位符」和
+        // 「占位符在、但被拆散了」（后者是模板的事，不该让调用方背锅）。
+        if visible_text(&xml).contains("{{") {
+            joined += 1;
+        }
+        if xml.contains('｛') {
+            full += 1;
+        }
+        if xml.contains("<w:instrText") {
+            instr += 1;
+        }
+    }
+    format!(
+        "模板里没有找到任何 {{{{...}}}} 占位符（模板可能已损坏或传错文件）: \
+         word 部件 {parts} 个，其中 XML 里含 `{{{{` 的 {braces} 个、\
+         拼接 <w:t> 后含 `{{{{` 的 {joined} 个（占位符被 Word 拆成多个 run）、\
+         含全角 `｛` 的 {full} 个、含 Word 字段 <w:instrText> 的 {instr} 个"
+    )
 }
 
 /// 是不是 `word/` 这一层下的 XML 部件。
@@ -567,18 +872,25 @@ fn make_t(open_tag: &str, text: &str) -> String {
 
 // ---------------------------------------------------------------- 占位符替换
 
-/// 在一份 XML 部件里替换占位符，返回 `(新 XML, 替换次数)`。
+/// 在一份 XML 部件里替换占位符，返回 `(新 XML, 替换次数, 没有取到值的占位符)`。
 ///
 /// 做法：按 `</w:p>` 切段（跨段拼接没有语义，会误匹配）→ 段内把所有 `<w:t>`
-/// 的文本拼成一个字符串并记录每个 run 覆盖的区间 → 在拼接串上定位占位符 →
-/// 把替换值写进**命中区间覆盖到的第一个 run**，同区间内其余 run 清空。
+/// 的文本拼成一个字符串并记录每个 run 覆盖的区间 → 在拼接串上扫 `{{ ... }}`
+/// token → 把替换值写进**命中区间覆盖到的第一个 run**，同区间内其余 run 清空。
 ///
 /// 之所以敢把值全塞进第一个 run：模板里 `{{` / `Fund_cnname` / `}}` 三个 run
 /// 的 `<w:rPr>` 完全相同（同一个 `w:sz`），格式不会因此改变。
-fn fill_placeholders_in_part(xml: &str, values: &[(&str, String)]) -> (String, usize) {
+///
+/// 匹配规则对齐 `docxtpl`（Jinja2）：
+/// - **按 token 扫描而不是按字面量匹配**：`{{Fund_cnname}}`、`{{ Fund_cnname }}`
+///   这类 Jinja 写法都能命中；键名 `values` 里不带 `{{ }}`；
+/// - **未知变量渲染成空串**：Jinja2 的默认行为（`Undefined`），历史上 Python 侧
+///   一直如此（`glv_template2` 的 `header3.xml` 里就有没注入过值的占位符）。是否
+///   接受由调用方通过 `strict` 决定，这里只负责把清单汇报上去。
+fn fill_placeholders_in_part(xml: &str, values: &[(&str, String)]) -> (String, usize, Vec<String>) {
     let els = scan_t(xml);
     if els.is_empty() {
-        return (xml.to_string(), 0);
+        return (xml.to_string(), 0, Vec::new());
     }
 
     // 切段：两个 <w:t> 之间若跨过 </w:p> 就断开
@@ -599,6 +911,8 @@ fn fill_placeholders_in_part(xml: &str, values: &[(&str, String)]) -> (String, u
     // run 下标 → 该 run 内要做的原位替换：(原文本起, 原文本止, 插入文本)
     let mut ops: Vec<Vec<(usize, usize, String)>> = vec![Vec::new(); els.len()];
     let mut count = 0usize;
+    // 取不到值的占位符（形如 `{{xxx}}`），按 Jinja2 语义渲染为空，仅汇报。
+    let mut unknown: Vec<String> = Vec::new();
 
     for seg in &segs {
         let mut joined = String::new();
@@ -609,20 +923,43 @@ fn fill_placeholders_in_part(xml: &str, values: &[(&str, String)]) -> (String, u
             spans.push((s, joined.len()));
         }
 
+        // 从左到右扫 {{ ... }}，天然有序（不需要再排序）。
         let mut hits: Vec<(usize, usize, String)> = Vec::new();
-        for (ph, val) in values {
-            let esc = xml_escape(val);
-            let mut from = 0usize;
-            while let Some(rel) = joined[from..].find(ph) {
-                let hs = from + rel;
-                hits.push((hs, hs + ph.len(), esc.clone()));
-                from = hs + ph.len();
-            }
-        }
-        hits.sort_by_key(|h| h.0);
+        let mut from = 0usize;
+        while let Some(rel) = joined[from..].find("{{") {
+            let open = from + rel;
+            let body = open + 2;
+            // 找不到配对的 }} —— 这不是占位符（可能是正文里孤立的字符），跳过。
+            let Some(rel2) = joined[body..].find("}}") else {
+                break;
+            };
+            let close = body + rel2;
+            let end = close + 2;
 
+            let raw = &joined[body..close];
+            // 兜底：命中内容里有 XML 元字符或长到离谱的，多半是把两段正文之间的
+            // 东西误当成了占位符，别吞掉它们。
+            if raw.len() > 64 || raw.contains(['<', '>', '&']) {
+                from = body;
+                continue;
+            }
+            let key = raw.trim();
+            let esc = match values.iter().find(|(k, _)| *k == key) {
+                Some((_, v)) => {
+                    count += 1;
+                    xml_escape(v)
+                }
+                None => {
+                    unknown.push(format!("{{{{{key}}}}}"));
+                    String::new()
+                }
+            };
+            hits.push((open, end, esc));
+            from = end;
+        }
+
+        // `count` 已经在扫 token 时按「已知键名」自增过，这里只负责落成替换操作。
         for (hs, he, esc) in hits {
-            count += 1;
             let mut first = true;
             for (k, &ri) in seg.iter().enumerate() {
                 let (rs, re) = spans[k];
@@ -642,8 +979,10 @@ fn fill_placeholders_in_part(xml: &str, values: &[(&str, String)]) -> (String, u
         }
     }
 
-    if count == 0 {
-        return (xml.to_string(), 0);
+    // 只有取到值的占位符才进 `count`；一个部件可能**只有**未知占位符（要渲染成空串），
+    // 这时也必须走下面的重建流程，不能因为 count == 0 就原样返回。
+    if count == 0 && unknown.is_empty() {
+        return (xml.to_string(), 0, unknown);
     }
 
     // 从后往前重建，避免前面的改动让后面的偏移失效
@@ -668,7 +1007,7 @@ fn fill_placeholders_in_part(xml: &str, values: &[(&str, String)]) -> (String, u
         }
         out.replace_range(el.start..el.end, &make_t(&el.open_tag, &text));
     }
-    (out, count)
+    (out, count, unknown)
 }
 
 // ---------------------------------------------------------------- 节属性
@@ -781,21 +1120,78 @@ fn strip_pg_num_type(xml: &str) -> String {
     }
 }
 
-/// 摘掉内容里所有 sectPr 的页眉/页脚引用，并去掉 pgNumType。
+/// 摘掉内容里所有 sectPr 的页眉/页脚引用，去掉 pgNumType，并把纸张尺寸和页边距
+/// 换成模板的（`tpl_sect`）。
 ///
 /// 用户自己的页眉（`header1.xml`）不跟着搬，所以这些引用必须去掉 ——
 /// 否则后面扫关系 ID 时会被当成「上传文档引用的关系」而找不到。
-fn sanitize_sect_prs(xml: &str) -> String {
+fn sanitize_sect_prs(xml: &str, tpl_sect: &str) -> String {
     let prs = find_sect_prs(xml);
     if prs.is_empty() {
         return xml.to_string();
     }
     let mut out = xml.to_string();
     for (s, e) in prs.into_iter().rev() {
-        let sect = strip_pg_num_type(&strip_hf_refs(&out[s..e]));
+        let sect = apply_tpl_page(&strip_pg_num_type(&strip_hf_refs(&out[s..e])), tpl_sect);
         out.replace_range(s..e, &sect);
     }
     out
+}
+
+/// 把 sectPr 的**纸张尺寸和页边距**换成模板的，其余一律保留。
+///
+/// 需求：上传内容是「原封不动」追加进来的，但**页面宽度必须跟模板一致** ——
+/// 否则最终 PDF 里模板页和追加页的版心不一样（实测：模板 A4 纵向 11900×16840、
+/// 左右边距 851；上传文档第一节 A4 横向 16838×11906、左右边距 1440/1800，
+/// 追加过来就成了「每一页宽度不一样」）。
+///
+/// 只改 `w:pgSz` / `w:pgMar` 两个元素：分节结构、`w:cols`、`w:docGrid`、正文内容
+/// 都不动，所以字号、断行、图片尺寸仍然是上传文档原样。
+fn apply_tpl_page(sect_pr: &str, tpl_sect: &str) -> String {
+    let Some((pg_sz, pg_mar)) = page_elements(tpl_sect) else {
+        return sect_pr.to_string();
+    };
+    let mut out = strip_elem(sect_pr, "<w:pgSz");
+    out = strip_elem(&out, "<w:pgMar");
+    // CT_SectPr 要求 pgSz / pgMar 排在 cols、docGrid、pgNumType 之前。
+    let mut pos = out.len();
+    for a in ["<w:cols", "<w:docGrid", "<w:pgNumType", "</w:sectPr>"] {
+        if let Some(p) = out.find(a) {
+            pos = pos.min(p);
+        }
+    }
+    out.insert_str(pos, &format!("{pg_sz}{pg_mar}"));
+    out
+}
+
+/// 取 sectPr 里的 `<w:pgSz/>` 和 `<w:pgMar/>` 两个元素原文。
+fn page_elements(sect: &str) -> Option<(String, String)> {
+    Some((elem(sect, "<w:pgSz")?, elem(sect, "<w:pgMar")?))
+}
+
+/// 取一个自闭合元素的原文（含尖括号）。
+fn elem(xml: &str, open: &str) -> Option<String> {
+    let s = find_tag(xml, 0, open)?;
+    let gt = tag_end(xml, s)?;
+    Some(xml[s..gt + 1].to_string())
+}
+
+/// 删掉所有 `open` 开头的自闭合元素。
+fn strip_elem(xml: &str, open: &str) -> String {
+    let mut out = String::with_capacity(xml.len());
+    let mut i = 0usize;
+    loop {
+        let Some(s) = find_tag(xml, i, open) else {
+            out.push_str(&xml[i..]);
+            return out;
+        };
+        let Some(gt) = tag_end(xml, s) else {
+            out.push_str(&xml[i..]);
+            return out;
+        };
+        out.push_str(&xml[i..s]);
+        i = gt + 1;
+    }
 }
 
 /// 给内容里每个 sectPr 挂上 `refs`（模板正文那套页眉页脚）。

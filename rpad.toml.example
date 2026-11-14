@@ -1,0 +1,78 @@
+# rpad 的配置样例（对应 Python 侧 rpa/conf.py 的 AWS_PARAMS + 临时目录）。
+#
+# 复制成 rpad.toml 放在 rpad 可执行文件旁，或用环境变量 RPAD_CONFIG 指定路径。
+# 也可以完全不用文件：RPAD_SCHEMES 直接给一段 JSON（结构同 [scheme.*]），
+# 再用 RPAD_ADDR / RPAD_CONCURRENCY / RPAD_TMP_DIR 等微调。
+#
+# 字段与 Python conf.AWS_PARAMS[scheme] 的对应：
+#   aws_access_key_id     ← AWS_PARAMS[scheme]['aws_access_key_id']
+#   aws_secret_access_key ← AWS_PARAMS[scheme]['aws_secret_access_key']
+#   region_name           ← AWS_PARAMS[scheme]['region_name']
+#   bucket_id             ← AWS_PARAMS[scheme]['bucket_id']
+#   kms_id                ← AWS_PARAMS[scheme]['kms_id']（mfront/crm/crm_v2/hhcrm 用）
+
+[server]
+# 对应 Flask 的 0.0.0.0:8090
+addr = "0.0.0.0:8090"
+# 1 = 与 Python 的 Redis 全局锁等价（完全串行）；dxpdf 渲染是 CPU 密集，
+# 想提速可调到 CPU 核数。
+concurrency = 1
+# 抢不到并发许可的等待上限（对应 XLock 的 acquire_timeout=30s），超时按「文件生成失败」返回 409
+acquire_timeout_ms = 30000
+# 单请求整体超时，0 = 不限（与 Python 一致：那边只有锁超时，没有请求超时）
+request_timeout_ms = 0
+
+[oss]
+# 临时目录：对应 conf.template_file_path_window / template_file_path_linux。
+# 只有 crm_v2 走 Go DLL 那条路需要落盘，其余全内存。
+tmp_dir = "C:\\tmp"
+# 非空则把「合并后的 docx」按请求落盘一份，便于人工核对（正式环境留空）
+dump_dir = ""
+# crm_v2 专用：Go 编译的 kms_x64.dll（utility/kms.go）路径。
+# 留空时 crm_v2 走 Rust 原生解密（与 DLL 行为等价，见 src/rpad/oss.rs）。
+kms_dll_path = ""
+# S3 / KMS 单次 HTTP 超时（毫秒）
+http_timeout_ms = 60000
+
+[scheme.mfront]
+aws_access_key_id = "<AK>"
+aws_secret_access_key = "<SK>"
+region_name = "cn-northwest-1"
+bucket_id = "<bucket>"
+kms_id = "<cmk-id>"
+# 可选：临时凭据（STS）
+# session_token = ""
+# 可选：自定义端点（内网代理 / MinIO）；留空按 region 推导 AWS 域名
+# endpoint = "https://s3.example.internal"
+# kms_endpoint = "https://kms.example.internal"
+# force_path_style = false
+
+[scheme.crm]
+aws_access_key_id = "<AK>"
+aws_secret_access_key = "<SK>"
+region_name = "cn-northwest-1"
+bucket_id = "<bucket>"
+kms_id = "<cmk-id>"
+
+[scheme.crm_v2]
+aws_access_key_id = "<AK>"
+aws_secret_access_key = "<SK>"
+region_name = "cn-northwest-1"
+bucket_id = "<bucket>"
+kms_id = "<cmk-id>"
+# 想复用与 Python 相同的 Go DLL 时指定：
+# kms_dll_path 在 [oss] 里配
+
+[scheme.hhcrm]
+aws_access_key_id = "<AK>"
+aws_secret_access_key = "<SK>"
+region_name = "cn-northwest-1"
+bucket_id = "<bucket>"
+kms_id = "<cmk-id>"
+
+[scheme.other]
+aws_access_key_id = "<AK>"
+aws_secret_access_key = "<SK>"
+region_name = "cn-northwest-1"
+bucket_id = "<bucket>"
+# other 是明文 GET，不需要 kms_id
