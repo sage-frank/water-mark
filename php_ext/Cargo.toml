@@ -15,5 +15,13 @@ ext-php-rs = { version = "0.15", default-features = false, features = ["runtime"
 # 复用水印核心逻辑（water_mark crate 的 rlib）
 water_mark = { path = ".." }
 
+# 与根 crate 的 [profile.release] 对齐：从这里构建 PHP 扩展时，profile 取自
+# 本文件而不是根目录，不同步的话 water_mark 核心逻辑享受不到 LTO / 单 codegen
+# unit 优化。保留 strip=debuginfo（而非 symbols），避免影响 PHP 加载扩展时需要
+# 的动态导出符号（get_module）。刻意保留默认 panic=unwind：核心库 FFI 入口用
+# catch_unwind 兜底，改成 abort 会让宿主进程被畸形 PDF 干掉。
 [profile.release]
+opt-level = 3
+lto = "fat"
+codegen-units = 1
 strip = "debuginfo"

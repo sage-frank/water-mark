@@ -9,6 +9,12 @@ edition = "2024"
 lopdf = "0.45"
 ab_glyph = "0.2"
 log = "0.3.9"
+# CLI 批处理时把多个 PDF 摊到所有核心上；单个 PDF 内部仍保持串行（Document 的
+# 可变借用无法并行）。rayon 1.12 已在 Cargo.lock 里，离线可编译。
+rayon = "1"
+# 原字节签名特征扫描：memchr 的 SIMD 定位 '/' 比逐字节循环快一个量级。
+# 2.8.3 已在 Cargo.lock（其它依赖的传递依赖），离线可直接编译。
+memchr = "2"
 zip = { version = "8", default-features = false, features = ["deflate"] }
 tokio = { version = "1.53.1", features = ["rt-multi-thread", "macros", "net", "signal", "time", "sync", "fs"] }
 # 仅访问本机 unoserver 的明文 HTTP，故关闭默认特性（已确认 0.13 无 http1 开关，
@@ -77,6 +83,55 @@ dxpdfd = ["dep:axum", "docx"]
 lopure = ["dep:libreoffice-pure"]
 skia = ["dep:skia-safe"]
 
+
+# ---------------------------------------------------------------------------
+# 运行时 CPU 优化：牺牲编译时间换运行速度（编译一次、跑很多次，稳赚）。
+#   lto=fat + codegen-units=1  跨 crate 内联，lopdf/ab_glyph 热路径能整体优化
+#   opt-level=3                循环向量化、内联展开
+#   strip                     去符号表，减小加载开销
+#
+# 刻意保留 panic=unwind（默认值）：FFI 入口用 catch_unwind 兜底，改成 abort
+# 会让宿主 PHP-FPM 进程在遇到畸形 PDF 时被直接干掉。若部署形态是「一次性 CLI
+# 进程」，可自行改成 panic="abort" 再榨掉约 1~2% 的调用开销。
+#
+# 目标机器指令集不写死在配置里（跨机部署会 SIGILL）。在**部署机**上构建时用：
+#   RUSTFLAGS="-C target-cpu=native" cargo build --release
+# ---------------------------------------------------------------------------
+[profile.release]
+opt-level = 3
+lto = "fat"
+codegen-units = 1
+strip = "symbols"
+
+# ---------------------------------------------------------------------------
+# `cargo run` / `cargo build`（dev）也要能跑得动大文件。
+# 热点集中在少数几个依赖：lopdf 的解析、flate2 的解压、rayon 的并行迭代。
+# 只对这几个包开优化，避免 "package.*" 把 200+ 依赖全部按 opt3 重编
+# （实测那样首次 dev 构建要十几分钟，得不偿失）。
+# 本 crate 仍保持 opt-level=1，方便迭代与断点调试。
+# ---------------------------------------------------------------------------
+[profile.dev]
+opt-level = 1
+
+[profile.dev.package.lopdf]
+opt-level = 2
+debug-assertions = false
+
+[profile.dev.package.flate2]
+opt-level = 2
+debug-assertions = false
+
+[profile.dev.package.miniz_oxide]
+opt-level = 2
+debug-assertions = false
+
+[profile.dev.package.rayon]
+opt-level = 2
+debug-assertions = false
+
+[profile.dev.package.rayon-core]
+opt-level = 2
+debug-assertions = false
 
 [lib]
 name = "water_mark"
